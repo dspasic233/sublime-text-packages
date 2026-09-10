@@ -1,11 +1,21 @@
 Configuration:
-1. Go to Preferences → Package Settings → Kubeseal → Settings
-2. Set your certificate and private key paths
-3. Run "Kubeseal: Validate Configuration" to test setup
+1. Preferences → Package Settings → Kubeseal → Settings
+2. Fill "stages" with per-cluster cert_path / private_key_path (see defaults)
+3. Run "Kubeseal: Validate Configuration"
 
 Usage:
-- Select text → Ctrl+K, Ctrl+E to encrypt
-- Select encrypted text → Ctrl+K, Ctrl+D to decrypt
+- Encrypt selection or whole file → Ctrl+K, Ctrl+E
+  → quick panel asks which stage key to use
+  → no selection: seals Secret template → sibling *-sealedsecret.yaml
+- Decrypt selection → Ctrl+K, Ctrl+D
+  → asks which stage private key to use
+  → Secret.data values are auto base64-decoded
 
-note: if namespace and/or secret-name var is not present in the secret file - you wil get prompt to enter them.
+Safety:
+- Refuses to re-seal a SealedSecret
+- Confirms before overwriting *-sealedsecret.yaml
+- Confirms if selection already looks encrypted
+- Decrypt opens a scratch buffer (harder to accidentally commit plaintext)
+- Concurrent encrypt/decrypt operations are blocked
 
+note: if namespace / secret name is missing from the file metadata, you will be prompted.

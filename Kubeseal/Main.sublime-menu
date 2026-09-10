@@ -7,7 +7,7 @@
                 "id": "kubeseal",
                 "children": [
                     {
-                        "caption": "Encrypt Selected Text",
+                        "caption": "Encrypt (selection or full file)",
                         "command": "kubeseal_encrypt"
                     },
                     {
@@ -22,8 +22,42 @@
                         "command": "kubeseal_validate_config"
                     },
                     {
-                        "caption": "Open Settings",
+                        "caption": "Settings…",
                         "command": "kubeseal_open_settings"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "id": "preferences",
+        "children": [
+            {
+                "caption": "Package Settings",
+                "mnemonic": "P",
+                "id": "package-settings",
+                "children": [
+                    {
+                        "caption": "Kubeseal",
+                        "children": [
+                            {
+                                "caption": "Settings",
+                                "command": "edit_settings",
+                                "args": {
+                                    "base_file": "${packages}/Kubeseal/Kubeseal.sublime-settings",
+                                    "default": "{\n\t$0\n}\n"
+                                }
+                            },
+                            {
+                                "caption": "Key Bindings",
+                                "command": "edit_settings",
+                                "args": {
+                                    "base_file": "${packages}/Kubeseal/Default.sublime-keymap",
+                                    "user_file": "${packages}/User/Default (${platform}).sublime-keymap",
+                                    "default": "[\n\t$0\n]\n"
+                                }
+                            }
+                        ]
                     }
                 ]
             }

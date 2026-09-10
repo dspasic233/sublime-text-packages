@@ -1,6 +1,6 @@
 [
     {
-        "caption": "Kubeseal: Encrypt Selected Text",
+        "caption": "Kubeseal: Encrypt (selection or full file)",
         "command": "kubeseal_encrypt"
     },
     {

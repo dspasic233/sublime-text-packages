@@ -3,18 +3,35 @@
     "packages": [
         {
             "name": "Kubeseal",
-            "description": "Encrypt/decrypt strings with kubeseal",
+            "description": "Encrypt/decrypt strings with kubeseal for Kubernetes sealed secrets",
             "author": "Dusan Spasic",
             "details": "https://github.com/dspasic12/sublime-text-packages",
             "homepage": "https://github.com/dspasic12/sublime-text-packages",
             "issues": "https://github.com/dspasic12/sublime-text-packages/issues",
-            "readme": "https://raw.githubusercontent.com/dspasic12/sublime-text-packages/main/packages/kubeseal/README.md",
+            "readme": "https://raw.githubusercontent.com/dspasic12/sublime-text-packages/main/Kubeseal/readme",
             "releases": [
                 {
                     "version": "1.0.0",
                     "url": "https://github.com/dspasic12/sublime-text-packages/releases/download/v1.0.0/kubeseal.zip",
                     "date": "2026-02-06 12:00:00",
                     "sublime_text": ">=3000"
+                }
+            ]
+        },
+        {
+            "name": "Kubeapply",
+            "description": "Safely kubectl-apply the open Kubernetes YAML from Sublime Text (context picker, dry-run, diff, overwrite confirms)",
+            "author": "Dusan Spasic",
+            "details": "https://github.com/dspasic12/sublime-text-packages",
+            "homepage": "https://github.com/dspasic12/sublime-text-packages",
+            "issues": "https://github.com/dspasic12/sublime-text-packages/issues",
+            "readme": "https://raw.githubusercontent.com/dspasic12/sublime-text-packages/main/kubeapply/readme",
+            "releases": [
+                {
+                    "version": "1.0.0",
+                    "url": "https://github.com/dspasic12/sublime-text-packages/releases/download/v1.0.0/kubeapply.zip",
+                    "date": "2026-09-10 12:00:00",
+                    "sublime_text": ">=4000"
                 }
             ]
         }

@@ -1,10 +1,7 @@
 [
     {
         "caption": "Kubeseal: Encrypt",
-        "command": "kubeseal_encrypt",
-        "context": [
-            {"key": "selection_empty", "operator": "equal", "operand": false}
-        ]
+        "command": "kubeseal_encrypt"
     },
     {
         "caption": "Kubeseal: Decrypt",

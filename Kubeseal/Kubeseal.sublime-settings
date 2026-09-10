@@ -1,12 +1,55 @@
 {
-    "cert_path": "/path/to/your/sealed-secrets-public.pem",
-    "private_key_path": "/path/to/your/sealed-secrets-private.key",
+    // Per-stage / per-cluster sealed-secrets keys.
+    // Encrypt and decrypt ask which stage to use (quick panel).
+    // Paths support ${home}, ${packages}, and ~ expansion.
+    //
+    // Copy this into Packages/User/Kubeseal.sublime-settings (or edit via
+    // Preferences → Package Settings → Kubeseal → Settings) and replace
+    // the example paths with your own cert / private key locations.
+    "stages": [
+        {
+            "name": "dev",
+            "description": "Development cluster",
+            "cert_path": "${home}/path/to/dev/sealed-secrets/pub.pem",
+            "private_key_path": "${home}/path/to/dev/sealed-secrets/priv.key"
+        },
+        {
+            "name": "staging",
+            "description": "Staging cluster",
+            "cert_path": "${home}/path/to/staging/sealed-secrets/pub.pem",
+            "private_key_path": "${home}/path/to/staging/sealed-secrets/priv.key"
+        },
+        {
+            "name": "prod",
+            "description": "Production cluster (cert only example — set private_key_path to decrypt)",
+            "cert_path": "${home}/path/to/prod/sealed-secrets/pub.pem",
+            "private_key_path": ""
+        }
+    ],
+
+    // Pre-select this stage when the open file path does not imply one
+    "default_stage": "dev",
+
+    // true: always show stage quick panel; false: use last_stage / default_stage
+    "ask_stage_every_time": true,
+
+    // Updated automatically when you pick a stage
+    "last_stage": "",
+
+    // Optional absolute path if kubeseal is not on PATH (macOS GUI apps often miss Homebrew)
+    "kubeseal_path": "",
+
     "timeout": 30,
     "decrypt_output": "new_tab",
-    "auto_save_decrypted": false,
-    "show_progress": true,
+    "decode_secret_data": true,
     "validate_k8s_names": true,
+    "confirm_overwrite_sealedsecret": true,
+    "confirm_reseal_selection": true,
     "max_selections": 10,
     "default_namespace": "default",
-    "default_secret_name": "mysecret"
+    "default_secret_name": "mysecret",
+
+    // Legacy single-key fallback (used only when "stages" is empty)
+    "cert_path": "",
+    "private_key_path": ""
 }
