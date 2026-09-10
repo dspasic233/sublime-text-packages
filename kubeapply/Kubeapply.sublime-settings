@@ -1,0 +1,53 @@
+{
+    // Path to kubectl binary (empty = use PATH)
+    "kubectl_path": "kubectl",
+
+    // Seconds before kubectl commands time out
+    "timeout": 60,
+
+    // Always pass an explicit --context (never rely on current kubeconfig context)
+    "always_pass_context": true,
+
+    // Run server-side dry-run before the real apply
+    "dry_run_before_apply": true,
+
+    // Show kubectl diff (or "new resource") and require confirmation
+    "show_diff_before_apply": true,
+
+    // Final yes/no confirmation before apply
+    "require_confirmation": true,
+
+    // Extra confirm when context matches any of these glob-like patterns
+    // Patterns support * wildcards; matching is case-insensitive
+    "dangerous_context_patterns": [
+        "*prod*",
+        "*production*",
+        "*-prod-*",
+        "prod-*"
+    ],
+
+    // For dangerous contexts, require typing the context name to proceed
+    "dangerous_context_require_type_name": true,
+
+    // Warn (and require confirm) when the buffer has unsaved changes
+    "warn_unsaved_buffer": true,
+
+    // Prefer listing namespaces via quick panel; fallback to input if list fails
+    "namespace_picker": "quick_panel",
+
+    // Default namespace suggested when prompting
+    "default_namespace": "default",
+
+    // Never pass --force / --force-conflicts
+    "allow_force": false,
+
+    // kubectl apply validation
+    "validate": true,
+
+    // Field manager for server-side apply (only if server_side_apply is true)
+    "server_side_apply": false,
+    "field_manager": "sublime-kubeapply",
+
+    // Open apply result in a new scratch tab
+    "show_result_in_tab": true
+}

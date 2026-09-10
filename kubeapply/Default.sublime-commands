@@ -1,0 +1,18 @@
+[
+    {
+        "caption": "Kubeapply: Apply Open File",
+        "command": "kubeapply_open_file"
+    },
+    {
+        "caption": "Kubeapply: Dry-Run Open File",
+        "command": "kubeapply_dry_run_open_file"
+    },
+    {
+        "caption": "Kubeapply: Diff Open File",
+        "command": "kubeapply_diff_open_file"
+    },
+    {
+        "caption": "Kubeapply: Open Settings",
+        "command": "kubeapply_open_settings"
+    }
+]

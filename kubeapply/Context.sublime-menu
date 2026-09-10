@@ -1,0 +1,14 @@
+[
+    {
+        "caption": "Kubeapply: Apply This File",
+        "command": "kubeapply_open_file"
+    },
+    {
+        "caption": "Kubeapply: Dry-Run This File",
+        "command": "kubeapply_dry_run_open_file"
+    },
+    {
+        "caption": "Kubeapply: Diff This File",
+        "command": "kubeapply_diff_open_file"
+    }
+]

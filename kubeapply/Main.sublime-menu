@@ -1,0 +1,65 @@
+[
+    {
+        "id": "tools",
+        "children": [
+            {
+                "caption": "Kubeapply",
+                "id": "kubeapply",
+                "children": [
+                    {
+                        "caption": "Apply Open File",
+                        "command": "kubeapply_open_file"
+                    },
+                    {
+                        "caption": "Dry-Run Open File",
+                        "command": "kubeapply_dry_run_open_file"
+                    },
+                    {
+                        "caption": "Diff Open File",
+                        "command": "kubeapply_diff_open_file"
+                    },
+                    {
+                        "caption": "-"
+                    },
+                    {
+                        "caption": "Open Settings",
+                        "command": "kubeapply_open_settings"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "caption": "Preferences",
+        "mnemonic": "n",
+        "id": "preferences",
+        "children": [
+            {
+                "caption": "Package Settings",
+                "mnemonic": "P",
+                "id": "package-settings",
+                "children": [
+                    {
+                        "caption": "Kubeapply",
+                        "children": [
+                            {
+                                "caption": "Settings – Default",
+                                "command": "open_file",
+                                "args": {
+                                    "file": "${packages}/kubeapply/Kubeapply.sublime-settings"
+                                }
+                            },
+                            {
+                                "caption": "Settings – User",
+                                "command": "open_file",
+                                "args": {
+                                    "file": "${packages}/User/Kubeapply.sublime-settings"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]
