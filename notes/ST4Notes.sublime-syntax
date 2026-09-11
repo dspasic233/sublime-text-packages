@@ -1,0 +1,131 @@
+%YAML 1.2
+---
+# ST4Notes syntax definition
+# Package: notes/ST4Notes.sublime-syntax
+name: ST4Notes
+file_extensions:
+  - stnotes
+scope: text.stnotes
+hidden: false
+
+variables:
+  ticket_id: '[A-Z][A-Z0-9_]{0,30}-[0-9]+'
+
+contexts:
+  main:
+    # ==========================================================================
+    # Section separator:  # ===...===
+    # Uses comment scope -> grey/muted in all themes
+    # ==========================================================================
+    - match: '^#\s*={3,}\s*$'
+      scope: comment.line.stnotes
+
+    # ==========================================================================
+    # Date headers:  # 2026.7.28
+    # Uses markup.heading -> bold/bright in all themes
+    # ==========================================================================
+    - match: '^#\s+\d{4}\.\d{1,2}\.\d{1,2}\s*$'
+      scope: markup.heading.stnotes
+
+    # ==========================================================================
+    # Ticket-ID section headers:  # INFRA-1234:
+    # MUST come before the generic header rule below.
+    # Uses storage.type -> teal/blue in all themes
+    # ==========================================================================
+    - match: '^#\s+({{ticket_id}})(:)\s*$'
+      captures:
+        1: storage.type.stnotes
+        2: punctuation.separator.stnotes
+
+    # ==========================================================================
+    # Prose section headers:  # TICKETS:  # OPS:  # TODO:  # Weekly Summary...
+    # Uses keyword.control -> pink/magenta in all themes
+    # ==========================================================================
+    - match: '^#\s+.+$'
+      scope: keyword.control.stnotes
+
+    # ==========================================================================
+    # Bullet lines  - [HH:MM] ...
+    # Timestamp uses constant.numeric -> yellow in all themes
+    # ==========================================================================
+    - match: '^(-)\s+(\[\d{2}:\d{2}\])\s+'
+      captures:
+        1: punctuation.definition.list.stnotes
+        2: constant.numeric.stnotes
+      push: bullet_body
+
+    # Bullet without timestamp
+    - match: '^(-)\s+'
+      captures:
+        1: punctuation.definition.list.stnotes
+      push: bullet_body
+
+  # ---------------------------------------------------------------------------
+  # Inside a bullet line — apply inline spans
+  # ---------------------------------------------------------------------------
+  bullet_body:
+    - meta_scope: meta.bullet.stnotes
+
+    # ------------------------------------------------------------------
+    # State tags — evaluated top-to-bottom, most specific first
+    # ------------------------------------------------------------------
+
+    # [DONE]<<-  uses invalid.deprecated -> red/strikethrough in all themes
+    - match: '(\[DONE\])(\<\<-)'
+      captures:
+        1: invalid.deprecated.stnotes
+        2: invalid.deprecated.stnotes
+
+    # [IN REVIEW]  uses markup.changed -> orange in all themes
+    - match: '\[IN REVIEW\]'
+      scope: markup.changed.stnotes
+
+    # [CREATED]  uses markup.inserted -> green in all themes
+    - match: '\[CREATED\]'
+      scope: markup.inserted.stnotes
+
+    # [EVAL]  uses markup.italic -> italic/yellow in all themes
+    - match: '\[EVAL\]'
+      scope: markup.italic.stnotes
+
+    # [IN PROGRESS] or other bracket tags  uses entity.other.attribute-name -> yellow
+    - match: '\[[A-Z][A-Z0-9 _-]{0,30}\]'
+      scope: entity.other.attribute-name.stnotes
+
+    # Date stamps inside bullets: [2026.07.28]
+    - match: '\[\d{4}\.\d{2}\.\d{2}\]'
+      scope: constant.numeric.stnotes
+
+    # ------------------------------------------------------------------
+    # Inline ticket IDs: INFRA-1234  ABC-99
+    # Uses storage.type -> teal/blue (same as ticket headers, consistent)
+    # ------------------------------------------------------------------
+    - match: '\b({{ticket_id}})\b'
+      scope: storage.type.stnotes
+
+    # ------------------------------------------------------------------
+    # @mentions: @username  @First.Last
+    # Uses variable.language -> orange in all themes (Monokai/Mariana)
+    # ------------------------------------------------------------------
+    - match: '(?<!\w)@[A-Za-z][A-Za-z0-9._-]+'
+      scope: variable.language.stnotes
+
+    # ------------------------------------------------------------------
+    # #hashtags: #tag  #my-tag
+    # NOTE: must NOT match section headers (those start at col 0 and are
+    # already consumed above). This only fires inside bullet_body context.
+    # Uses entity.name.tag -> green in all themes
+    # ------------------------------------------------------------------
+    - match: '(?<!\w)#[A-Za-z][A-Za-z0-9_-]+'
+      scope: entity.name.tag.stnotes
+
+    # ------------------------------------------------------------------
+    # URLs
+    # Uses markup.underline.link -> teal/underlined in all themes
+    # ------------------------------------------------------------------
+    - match: 'https?://[A-Za-z0-9\-._~:/?#\[\]@!$&''()*+,;=%]+'
+      scope: markup.underline.link.stnotes
+
+    # End of line
+    - match: '$'
+      pop: true

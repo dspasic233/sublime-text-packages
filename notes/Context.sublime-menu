@@ -1,0 +1,14 @@
+[
+    {
+        "caption": "Notes: Add",
+        "command": "notes_add"
+    },
+    {
+        "caption": "Notes: Search",
+        "command": "notes_search"
+    },
+    {
+        "caption": "Notes: Open Issue",
+        "command": "notes_open_issue"
+    }
+]

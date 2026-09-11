@@ -34,6 +34,23 @@
                     "sublime_text": ">=4000"
                 }
             ]
+        },
+        {
+            "name": "ST4Notes",
+            "description": "Daily notes + optional YouTrack integration for Sublime Text 4",
+            "author": "Dusan Spasic",
+            "details": "https://github.com/dspasic12/sublime-text-packages",
+            "homepage": "https://github.com/dspasic12/sublime-text-packages",
+            "issues": "https://github.com/dspasic12/sublime-text-packages/issues",
+            "readme": "https://raw.githubusercontent.com/dspasic12/sublime-text-packages/main/notes/readme",
+            "releases": [
+                {
+                    "version": "1.0.0",
+                    "url": "https://github.com/dspasic12/sublime-text-packages/releases/download/v1.0.0/notes.zip",
+                    "date": "2026-09-11 12:00:00",
+                    "sublime_text": ">=4000"
+                }
+            ]
         }
     ]
 }

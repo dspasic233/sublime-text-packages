@@ -1,0 +1,93 @@
+# ST4Notes
+
+Daily notes + YouTrack integration for Sublime Text 4.
+
+Stores a single plain-text notes file (`.stnotes` / `ST4Notes` syntax), with commands to add/search entries, open tickets, import issues, and optionally post comments back to YouTrack.
+
+## Commands (Cmd+Shift+P / Ctrl+Shift+P)
+
+| Command | What it does |
+|---------|----------------|
+| **Notes: Add** | Append a timed note (ticket / TODO / OPS / create or import from YouTrack) |
+| **Notes: Edit** | Open the notes file |
+| **Notes: Search** | Quick-panel search over tickets / TODO / OPS |
+| **Notes: Open Issue** | Open a ticket in the browser (or list YouTrack issues) |
+| **Notes: Weekly Summary** | Scratch view of recent activity |
+| **Notes: Weekly Search** | Search within the weekly window |
+| **Notes: Create Issue** | Create a YouTrack issue (optional stage sub-tasks) |
+| **Notes: Settings** | Edit package settings |
+
+Also: **Tools → Notes**, and a few entries on the context menu.
+
+## Notes file format
+
+```
+# ==============================================================================
+# 2026.9.11
+# ==============================================================================
+# PROJ-1234:
+- [09:15] [IN PROGRESS] shipped dry-run gate
+- [10:02] [DONE]<< - follow-up with @alice #deploy
+```
+
+Syntax highlights dates, ticket IDs, state tags (`[DONE]`, `[IN REVIEW]`, …), `@mentions`, `#hashtags`, and URLs. Hover a URL or ticket ID in a notes view to open / preview.
+
+## Settings
+
+**Preferences → Package Settings → ST4Notes**
+
+| Key | Default | Notes |
+|-----|---------|--------|
+| `notes_file` | `~/Documents/ST4Notes` | Local notes path (`~` expanded) |
+| `youtrack_base` | `""` | e.g. `https://youtrack.example.com/issue/` (https only) |
+| `youtrack_token` | `""` | Permanent token — **User settings only**, never commit |
+| `default_project` | `""` | YouTrack project shortName |
+| `issue_stages` | `[]` | Optional stage sub-task names |
+| `post_comments` | `false` | Post note text as YouTrack comments on Add |
+| `api_timeout_sec` | `10` | HTTP timeout |
+| `api_max_retries` | `2` | Retries on 429/502/503 |
+
+User overrides live in `Packages/User/ST4Notes.sublime-settings` and merge over package defaults.
+
+## Install (manual)
+
+Copy this `notes` folder into your Sublime Text `Packages` directory:
+
+| Platform | Path |
+|----------|------|
+| **Windows** | `%APPDATA%\Sublime Text\Packages\` |
+| **Mac** | `~/Library/Application Support/Sublime Text/Packages/` |
+| **Linux** | `~/.config/sublime-text/Packages/` |
+
+Restart Sublime Text (or Package Control: Satisfy Dependencies / reload).
+
+**Dev symlink:**
+
+```bash
+ln -s "/path/to/sublime-text-packages/notes" \
+  "$HOME/Library/Application Support/Sublime Text/Packages/notes"
+```
+
+### Migrating from Packages/User
+
+If you previously kept `notes_plugin.py` (and related files) under `Packages/User/`, remove those copies after installing this package so commands are not registered twice:
+
+- `notes_plugin.py`
+- `notes_plugin.sublime-commands`
+- `ST4Notes.sublime-syntax`
+- `ST4Notes.sublime-color-scheme`
+- `ST4Notes.tmPreferences`
+
+Keep `Packages/User/ST4Notes.sublime-settings` for your token and personal overrides.
+
+## Requirements
+
+- Sublime Text 4
+- Optional: YouTrack permanent token for create/import/comment features
+
+## Safety
+
+- `youtrack_base` must be `https://` (http rejected)
+- Loopback / private hostnames for YouTrack are rejected
+- Default `post_comments` is `false`
+- Package defaults ship with an empty token

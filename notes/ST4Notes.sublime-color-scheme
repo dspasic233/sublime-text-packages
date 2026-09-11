@@ -1,0 +1,84 @@
+{
+    "name": "ST4Notes",
+    "globals": {},
+    "rules": [
+        {
+            "name": "ST4Notes separator",
+            "scope": "comment.line.stnotes",
+            "foreground": "#5c6370"
+        },
+        {
+            "name": "ST4Notes date header",
+            "scope": "markup.heading.stnotes",
+            "foreground": "#e5c07b",
+            "font_style": "bold"
+        },
+        {
+            "name": "ST4Notes ticket / type",
+            "scope": "storage.type.stnotes",
+            "foreground": "#61afef",
+            "font_style": "bold"
+        },
+        {
+            "name": "ST4Notes section header",
+            "scope": "keyword.control.stnotes",
+            "foreground": "#c678dd",
+            "font_style": "bold"
+        },
+        {
+            "name": "ST4Notes timestamp",
+            "scope": "constant.numeric.stnotes",
+            "foreground": "#d19a66"
+        },
+        {
+            "name": "ST4Notes DONE",
+            "scope": "invalid.deprecated.stnotes",
+            "foreground": "#e06c75",
+            "font_style": "italic"
+        },
+        {
+            "name": "ST4Notes IN REVIEW",
+            "scope": "markup.changed.stnotes",
+            "foreground": "#e5c07b",
+            "font_style": "bold"
+        },
+        {
+            "name": "ST4Notes CREATED",
+            "scope": "markup.inserted.stnotes",
+            "foreground": "#98c379",
+            "font_style": "bold"
+        },
+        {
+            "name": "ST4Notes EVAL",
+            "scope": "markup.italic.stnotes",
+            "foreground": "#e5c07b",
+            "font_style": "italic"
+        },
+        {
+            "name": "ST4Notes bracket tag",
+            "scope": "entity.other.attribute-name.stnotes",
+            "foreground": "#e5c07b"
+        },
+        {
+            "name": "ST4Notes @mention",
+            "scope": "variable.language.stnotes",
+            "foreground": "#d19a66"
+        },
+        {
+            "name": "ST4Notes #hashtag",
+            "scope": "entity.name.tag.stnotes",
+            "foreground": "#98c379"
+        },
+        {
+            "name": "ST4Notes URL",
+            "scope": "markup.underline.link.stnotes",
+            "foreground": "#56b6c2",
+            "font_style": "underline"
+        },
+        {
+            "name": "ST4Notes bullet",
+            "scope": "punctuation.definition.list.stnotes",
+            "foreground": "#abb2bf"
+        }
+    ]
+}

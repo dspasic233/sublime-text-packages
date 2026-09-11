@@ -1,0 +1,28 @@
+{
+    // Absolute or ~ -expanded path to the single notes file.
+    "notes_file": "~/Documents/ST4Notes",
+
+    // YouTrack issue browser base URL (https required; trailing slash recommended).
+    // Example: "https://youtrack.example.com/issue/"
+    "youtrack_base": "",
+
+    // Permanent API token. Prefer setting this only in
+    // Packages/User/ST4Notes.sublime-settings — never commit a real token.
+    // YouTrack → Profile → Authentication → New token
+    // Scopes: Read Issue, Create Issue, Update Issue, Create Comment
+    "youtrack_token": "",
+
+    // Default YouTrack project shortName (issue create / import / TODO list).
+    "default_project": "",
+
+    // Stage names offered when creating stage sub-tasks.
+    // Leave [] to be prompted at creation time.
+    // Example: ["Design", "Dev", "QA", "Deploy"]
+    "issue_stages": [],
+
+    // When true, Notes - Add also posts the note text as a YouTrack comment.
+    "post_comments": false,
+
+    "api_timeout_sec": 10,
+    "api_max_retries": 2
+}

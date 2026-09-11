@@ -1,0 +1,34 @@
+[
+    {
+        "caption": "Notes: Add",
+        "command": "notes_add"
+    },
+    {
+        "caption": "Notes: Edit",
+        "command": "notes_edit"
+    },
+    {
+        "caption": "Notes: Search",
+        "command": "notes_search"
+    },
+    {
+        "caption": "Notes: Open Issue",
+        "command": "notes_open_issue"
+    },
+    {
+        "caption": "Notes: Weekly Summary",
+        "command": "notes_weekly_summary"
+    },
+    {
+        "caption": "Notes: Weekly Search",
+        "command": "notes_weekly_search"
+    },
+    {
+        "caption": "Notes: Create Issue",
+        "command": "notes_create_issue"
+    },
+    {
+        "caption": "Notes: Settings",
+        "command": "notes_settings"
+    }
+]

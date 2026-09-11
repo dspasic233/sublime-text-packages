@@ -1,0 +1,20 @@
+ST4Notes Plugin for Sublime Text
+================================
+
+Thank you for installing ST4Notes (package folder: notes).
+
+Quick start:
+1. Preferences → Package Settings → ST4Notes → Settings – User
+2. Set youtrack_base / youtrack_token / default_project if you use YouTrack
+3. Cmd+Shift+P → "Notes: Add" or "Notes: Edit"
+
+Notes file default: ~/Documents/ST4Notes
+Override with the "notes_file" setting.
+
+Security:
+- Never put a real youtrack_token in the package defaults or git
+- Keep tokens only in Packages/User/ST4Notes.sublime-settings
+- post_comments defaults to false
+
+If you previously installed the plugin from Packages/User, remove the old
+notes_plugin.py / ST4Notes.* files there to avoid duplicate commands.

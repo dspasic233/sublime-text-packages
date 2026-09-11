@@ -1,0 +1,93 @@
+[
+    {
+        "id": "tools",
+        "children": [
+            {
+                "caption": "Notes",
+                "id": "st4notes",
+                "children": [
+                    {
+                        "caption": "Add",
+                        "command": "notes_add"
+                    },
+                    {
+                        "caption": "Edit",
+                        "command": "notes_edit"
+                    },
+                    {
+                        "caption": "Search",
+                        "command": "notes_search"
+                    },
+                    {
+                        "caption": "Open Issue",
+                        "command": "notes_open_issue"
+                    },
+                    {
+                        "caption": "-"
+                    },
+                    {
+                        "caption": "Weekly Summary",
+                        "command": "notes_weekly_summary"
+                    },
+                    {
+                        "caption": "Weekly Search",
+                        "command": "notes_weekly_search"
+                    },
+                    {
+                        "caption": "Create Issue",
+                        "command": "notes_create_issue"
+                    },
+                    {
+                        "caption": "-"
+                    },
+                    {
+                        "caption": "Settings…",
+                        "command": "notes_settings"
+                    }
+                ]
+            }
+        ]
+    },
+    {
+        "caption": "Preferences",
+        "mnemonic": "n",
+        "id": "preferences",
+        "children": [
+            {
+                "caption": "Package Settings",
+                "mnemonic": "P",
+                "id": "package-settings",
+                "children": [
+                    {
+                        "caption": "ST4Notes",
+                        "children": [
+                            {
+                                "caption": "Settings – Default",
+                                "command": "open_file",
+                                "args": {
+                                    "file": "${packages}/notes/ST4Notes.sublime-settings"
+                                }
+                            },
+                            {
+                                "caption": "Settings – User",
+                                "command": "open_file",
+                                "args": {
+                                    "file": "${packages}/User/ST4Notes.sublime-settings"
+                                }
+                            },
+                            {
+                                "caption": "Key Bindings",
+                                "command": "edit_settings",
+                                "args": {
+                                    "base_file": "${packages}/notes/Default.sublime-keymap",
+                                    "user_file": "${packages}/User/Default (${platform}).sublime-keymap",
+                                    "default": "[\n\t$0\n]\n"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+]
