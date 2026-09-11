@@ -38,19 +38,43 @@ CLUSTER_SCOPED_KINDS = {
 }
 
 
+# One interactive flow at a time (prevents overlapping apply/diff prompts).
+_FLOW_LOCK = threading.Lock()
+_FLOW_ACTIVE = False
+
+
+def _try_begin_flow():
+    global _FLOW_ACTIVE
+    with _FLOW_LOCK:
+        if _FLOW_ACTIVE:
+            return False
+        _FLOW_ACTIVE = True
+        return True
+
+
+def _end_flow():
+    global _FLOW_ACTIVE
+    with _FLOW_LOCK:
+        _FLOW_ACTIVE = False
+
+
 def _settings():
     s = sublime.load_settings("Kubeapply.sublime-settings")
+    # Hard safety locks (cannot be disabled — prevents accidental apply):
+    # - always pass --context
+    # - always server-side dry-run before apply
+    # - always require confirmation before apply
     return {
         "kubectl_path": s.get("kubectl_path", "kubectl") or "kubectl",
         "timeout": int(s.get("timeout", 60) or 60),
-        "always_pass_context": bool(s.get("always_pass_context", True)),
-        "dry_run_before_apply": bool(s.get("dry_run_before_apply", True)),
+        "always_pass_context": True,
+        "dry_run_before_apply": True,
         "show_diff_before_apply": bool(s.get("show_diff_before_apply", True)),
-        "require_confirmation": bool(s.get("require_confirmation", True)),
+        "require_confirmation": True,
         "dangerous_context_patterns": list(
             s.get(
                 "dangerous_context_patterns",
-                ["*prod*", "*production*", "*-prod-*", "prod-*"],
+                ["*prod*", "*production*", "*-prod-*", "prod-*", "*prd*", "*live*"],
             )
             or []
         ),
@@ -58,14 +82,17 @@ def _settings():
             s.get("dangerous_context_require_type_name", True)
         ),
         "warn_unsaved_buffer": bool(s.get("warn_unsaved_buffer", True)),
+        "warn_secret_resources": bool(s.get("warn_secret_resources", True)),
+        "block_on_unverified_resources": bool(
+            s.get("block_on_unverified_resources", True)
+        ),
         "namespace_picker": s.get("namespace_picker", "quick_panel") or "quick_panel",
         "default_namespace": s.get("default_namespace", "default") or "default",
-        "allow_force": bool(s.get("allow_force", False)),
         "validate": bool(s.get("validate", True)),
         "server_side_apply": bool(s.get("server_side_apply", False)),
         "field_manager": s.get("field_manager", "sublime-kubeapply")
         or "sublime-kubeapply",
-        "show_result_in_tab": bool(s.get("show_result_in_tab", True)),
+        "show_result_in_tab": True,
     }
 
 
@@ -209,7 +236,20 @@ def _is_resource_not_found(text):
     combined = (text or "").lower()
     if _is_missing_namespace_error(combined):
         return False
-    return "notfound" in combined.replace(" ", "") or "not found" in combined
+    # Prefer explicit API NotFound markers; avoid bare "not found" false positives.
+    compact = combined.replace(" ", "")
+    if "notfound" in compact:
+        return True
+    if re.search(r'\berror from server \(notfound\)', combined):
+        return True
+    if re.search(r'\bnot found\b', combined) and (
+        "error from server" in combined
+        or re.search(r'\b(services?|pods?|deployments?|configmaps?|secrets?|'
+                     r'statefulsets?|daemonsets?|jobs?|cronjobs?|ingresses?|'
+                     r'roles?|rolebindings?|serviceaccounts?)\b', combined)
+    ):
+        return True
+    return False
 
 
 def _write_temp_manifest(content, suffix=".yaml"):
@@ -353,13 +393,22 @@ class _KubeapplyFlow(object):
             sublime.error_message("Kubeapply: no active view")
             return
 
+        if not _try_begin_flow():
+            sublime.error_message(
+                "Kubeapply: another operation is already in progress.\n"
+                "Finish or cancel it before starting a new one."
+            )
+            return
+
         if self.view.size() == 0:
+            _end_flow()
             sublime.error_message("Kubeapply: current file is empty")
             return
 
         self.manifest_text = self.view.substr(sublime.Region(0, self.view.size()))
         self.resources = _parse_resources(self.manifest_text)
         if not self.resources:
+            _end_flow()
             sublime.error_message(
                 "Kubeapply: no Kubernetes resources found "
                 "(need apiVersion / kind / metadata.name)"
@@ -383,6 +432,7 @@ class _KubeapplyFlow(object):
                     )
                 )
         if missing:
+            _end_flow()
             sublime.error_message(
                 "Kubeapply: invalid manifest\n\n" + "\n".join(missing[:12])
             )
@@ -401,18 +451,17 @@ class _KubeapplyFlow(object):
         self._prepare_manifest_and_load_contexts()
 
     def _prepare_manifest_and_load_contexts(self):
-        file_name = self.view.file_name()
-        if file_name and not self.view.is_dirty():
-            self.manifest_path = file_name
-        else:
-            try:
-                self.temp_path = _write_temp_manifest(self.manifest_text)
-                self.manifest_path = self.temp_path
-            except Exception as exc:
-                sublime.error_message(
-                    "Kubeapply: failed to write temp manifest: {}".format(exc)
-                )
-                return
+        # Always apply a frozen buffer snapshot via temp file. Never pass the
+        # on-disk path: it can diverge from the buffer or change mid-flow.
+        try:
+            self.temp_path = _write_temp_manifest(self.manifest_text)
+            self.manifest_path = self.temp_path
+        except Exception as exc:
+            self.cleanup()
+            sublime.error_message(
+                "Kubeapply: failed to write temp manifest: {}".format(exc)
+            )
+            return
 
         sublime.status_message("Kubeapply: loading contexts...")
         threading.Thread(target=self._load_contexts_async).start()
@@ -446,14 +495,18 @@ class _KubeapplyFlow(object):
             except Exception:
                 pass
             self.temp_path = None
+        _end_flow()
+
 
     def _kubectl(self, args, stdin_data=None):
         return _run_kubectl(args, self.settings, stdin_data=stdin_data)
 
     def _with_context(self, args):
         out = list(args)
-        if self.settings["always_pass_context"] and self.context:
-            out.extend(["--context", self.context])
+        # Hard requirement: every kubectl call targets the chosen context.
+        if not self.context:
+            raise RuntimeError("Kubeapply internal error: context not selected")
+        out.extend(["--context", self.context])
         return out
 
     def _load_contexts_async(self):
@@ -715,6 +768,24 @@ class _KubeapplyFlow(object):
 
         ns = self.missing_namespaces[0]
 
+        # Dry-Run / Diff must never mutate the cluster (including namespaces).
+        if self.mode != self.MODE_APPLY:
+            self._abort_with_report(
+                [
+                    "Namespace '{}' does not exist on context '{}'.".format(
+                        ns, self.context
+                    ),
+                    "Mode '{}' is read-only and will not create namespaces.".format(
+                        self.mode
+                    ),
+                    "Create the namespace first, or run Kubeapply: Apply Open File.",
+                ],
+                "Kubeapply: missing namespace — {} will not create it".format(
+                    self.mode
+                ),
+            )
+            return
+
         def on_no():
             self.cleanup()
             sublime.status_message(
@@ -727,8 +798,8 @@ class _KubeapplyFlow(object):
 
         self._confirm_quick(
             "Create namespace '{}'".format(ns),
-            "Does not exist on context '{}'. Create it, then continue {}.".format(
-                self.context, self.mode
+            "Does not exist on context '{}'. Create it, then continue apply.".format(
+                self.context
             ),
             on_yes,
             on_no=on_no,
@@ -903,8 +974,8 @@ class _KubeapplyFlow(object):
                 self.cleanup()
                 return
 
-            # APPLY mode
-            if errors and self.settings["dry_run_before_apply"]:
+            # APPLY mode — any pre-check / dry-run error blocks apply.
+            if errors:
                 self._abort_with_report(
                     errors,
                     "Kubeapply: dry-run / pre-checks failed — see report tab",
@@ -926,8 +997,7 @@ class _KubeapplyFlow(object):
         if self.settings["server_side_apply"]:
             args.append("--server-side")
             args.extend(["--field-manager", self.settings["field_manager"]])
-        # Hard safety: never pass --force from this plugin
-        _ = self.settings["allow_force"]
+        # Hard safety: never pass --force / --force-conflicts from this plugin
         return args
 
     def _format_report(self, errors):
@@ -1033,9 +1103,7 @@ class _KubeapplyFlow(object):
         return "\n".join(lines)
 
     def _show_output_tab(self, title, content, focus=True, syntax=None):
-        if not self.settings["show_result_in_tab"]:
-            # Avoid native message_dialog (macOS ST4 sheet crashes). Use a tab anyway.
-            pass
+        # Always use a scratch tab (native dialogs hard-exit ST4 on macOS).
         new_view = self.window.new_file()
         new_view.set_name(title)
         new_view.set_scratch(True)
@@ -1062,6 +1130,33 @@ class _KubeapplyFlow(object):
         updates = [i for i in self.exists_summary if i["exists"] is True]
         creates = [i for i in self.exists_summary if i["exists"] is False]
         unknowns = [i for i in self.exists_summary if i["exists"] is None]
+
+        if unknowns and self.settings.get("block_on_unverified_resources", True):
+            msgs = [
+                "Refusing to apply: could not verify {} resource(s).".format(
+                    len(unknowns)
+                ),
+                "Fix kubectl access / kind names, then retry.",
+                "",
+            ]
+            for i in unknowns[:12]:
+                msgs.append(
+                    "  - {}: {}".format(
+                        i["label"], i.get("error") or "existence check failed"
+                    )
+                )
+            self._abort_with_report(
+                msgs,
+                "Kubeapply: blocked — unverified resources (see report tab)",
+            )
+            return
+
+        if not updates and not creates:
+            self._abort_with_report(
+                ["No creatable/updatable resources after pre-checks."],
+                "Kubeapply: nothing to apply",
+            )
+            return
 
         # Show kubectl diff in a tab BEFORE any apply confirmation so the user
         # can review changes prior to overwriting existing kinds.
@@ -1094,6 +1189,18 @@ class _KubeapplyFlow(object):
             summary_lines.append(
                 "Namespace (prompted): {}".format(self.chosen_namespace)
             )
+        if self.settings.get("warn_secret_resources", True):
+            secrets = [
+                r
+                for r in self.resources
+                if (r.get("kind") or "").lower() == "secret"
+            ]
+            if secrets:
+                summary_lines.append(
+                    "WARNING: {} Secret resource(s) — plaintext may appear in diff/report tabs".format(
+                        len(secrets)
+                    )
+                )
         if creates:
             summary_lines.append("CREATE ({})".format(len(creates)))
             for i in creates[:6]:
@@ -1147,7 +1254,7 @@ class _KubeapplyFlow(object):
         elif creates:
             ok_label = "Create {} resource(s)".format(len(creates))
         else:
-            ok_label = "Create"
+            ok_label = "Apply {} resource(s)".format(len(self.exists_summary))
 
         def after_first_confirm():
             if updates:
@@ -1167,18 +1274,13 @@ class _KubeapplyFlow(object):
                 return
             self._start_apply_after_confirm()
 
-        if self.settings["require_confirmation"] or must_review_diff:
-            # Slightly longer delay when a diff tab was just opened so ST can
-            # focus it before the quick panel appears on top.
-            delay_ms = 80 if show_diff else 10
+        # Confirmation is mandatory (safety lock).
+        delay_ms = 80 if show_diff else 10
 
-            def show_confirm():
-                self._confirm_quick(ok_label, detail, after_first_confirm)
+        def show_confirm():
+            self._confirm_quick(ok_label, detail, after_first_confirm)
 
-            sublime.set_timeout(show_confirm, delay_ms)
-            return
-
-        self._start_apply_after_confirm()
+        sublime.set_timeout(show_confirm, delay_ms)
 
     def _start_apply_after_confirm(self):
         sublime.status_message("Kubeapply: applying...")

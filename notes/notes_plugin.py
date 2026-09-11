@@ -17,9 +17,10 @@ import threading
 import webbrowser
 import subprocess
 from datetime import datetime, date as datetime_date, timedelta
-from urllib.request import Request, urlopen
+from urllib.request import Request, urlopen, build_opener, HTTPSHandler, HTTPRedirectHandler
 from urllib.error   import URLError, HTTPError
 from urllib.parse   import quote, urlparse
+import ipaddress
 
 import sublime
 import sublime_plugin
@@ -152,6 +153,26 @@ def _post_comments_enabled() -> bool:
 # Security: base URL validation + host guard
 # ---------------------------------------------------------------------------
 
+def _is_blocked_ip_literal(hostname: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
+        return True
+    # CGNAT 100.64.0.0/10 (is_private covers this on modern Python; keep explicit)
+    if isinstance(ip, ipaddress.IPv4Address):
+        return ipaddress.IPv4Address("100.64.0.0") <= ip <= ipaddress.IPv4Address("100.127.255.255")
+    return False
+
+
 def _validate_youtrack_base(base: str) -> str | None:
     if not base:
         return None
@@ -169,17 +190,45 @@ def _validate_youtrack_base(base: str) -> str | None:
     if not hostname:
         return "youtrack_base has no hostname."
 
+    if _is_blocked_ip_literal(hostname):
+        return (
+            f"youtrack_base hostname '{hostname}' is a loopback/private/"
+            "link-local address.\n"
+            "Point youtrack_base at your public YouTrack instance."
+        )
+
+    _BLOCKED_EXACT = {
+        "localhost",
+        "metadata.google.internal",
+        "kubernetes.default",
+        "kubernetes.default.svc",
+    }
+    if hostname in _BLOCKED_EXACT or hostname.endswith(".local"):
+        return (
+            f"youtrack_base hostname '{hostname}' is blocked.\n"
+            "Point youtrack_base at your public YouTrack instance."
+        )
+
     _BLOCKED_PREFIXES = (
-        "localhost", "127.", "0.", "10.", "192.168.", "169.254.",
+        "localhost.", "127.", "0.", "10.", "192.168.", "169.254.",
     )
     _BLOCKED_RANGES_172 = range(16, 32)
 
-    if any(hostname == p or hostname.startswith(p) for p in _BLOCKED_PREFIXES):
+    if any(hostname == p.rstrip(".") or hostname.startswith(p) for p in _BLOCKED_PREFIXES):
         return (
             f"youtrack_base hostname '{hostname}' is a loopback or private address.\n"
             "Point youtrack_base at your public YouTrack instance."
         )
+
+    # Dotted hostname that is actually an IPv4 string already handled; also
+    # reject 172.16–31.* and 100.64–127.* when written as DNS-looking labels.
     parts = hostname.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        if _is_blocked_ip_literal(hostname):
+            return (
+                f"youtrack_base hostname '{hostname}' is a private address.\n"
+                "Point youtrack_base at your public YouTrack instance."
+            )
     if (
         len(parts) >= 2
         and parts[0] == "172"
@@ -188,6 +237,16 @@ def _validate_youtrack_base(base: str) -> str | None:
     ):
         return (
             f"youtrack_base hostname '{hostname}' is in a private IP range.\n"
+            "Point youtrack_base at your public YouTrack instance."
+        )
+    if (
+        len(parts) >= 2
+        and parts[0] == "100"
+        and parts[1].isdigit()
+        and 64 <= int(parts[1]) <= 127
+    ):
+        return (
+            f"youtrack_base hostname '{hostname}' is in the CGNAT range.\n"
             "Point youtrack_base at your public YouTrack instance."
         )
 
@@ -579,6 +638,21 @@ def _is_api_error(obj: object) -> bool:
     return isinstance(obj, _ApiError)
 
 
+
+class _RejectRedirectHandler(HTTPRedirectHandler):
+    """Refuse redirects so Bearer tokens are never forwarded to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise URLError(
+            f"Refusing HTTP {code} redirect from YouTrack API to {newurl}"
+        )
+
+
+def _yt_urlopen(req: Request, timeout: int, ctx: ssl.SSLContext):
+    opener = build_opener(HTTPSHandler(context=ctx), _RejectRedirectHandler())
+    return opener.open(req, timeout=timeout)
+
+
 def _yt_request(
     method: str,
     path: str,
@@ -619,7 +693,7 @@ def _yt_request(
             },
         )
         try:
-            with urlopen(req, timeout=timeout, context=ctx) as resp:
+            with _yt_urlopen(req, timeout=timeout, ctx=ctx) as resp:
                 raw = resp.read(_API_MAX_RESPONSE_BYTES).decode("utf-8")
                 return json.loads(raw) if raw.strip() else {}
 
@@ -804,7 +878,7 @@ def _fetch_issues_list(
             },
         )
         try:
-            with urlopen(req, timeout=timeout, context=ctx) as resp:
+            with _yt_urlopen(req, timeout=timeout, ctx=ctx) as resp:
                 # Use large buffer — list responses for big projects can be
                 # several MB; truncation causes JSONDecodeError mid-object.
                 raw  = resp.read(_API_MAX_RESPONSE_BYTES_LIST).decode("utf-8")
@@ -2522,17 +2596,35 @@ class NotesAddCommand(sublime_plugin.WindowCommand):
         if tid not in (_TODO_ID, _OPS_ID) and _youtrack_token() and _youtrack_base():
             desc_upper = desc.upper()
 
-            if desc_upper == "DONE":
-                sublime.set_timeout_async(lambda: _set_youtrack_done(tid), 0)
-            elif desc_upper == "REVIEW":
-                sublime.set_timeout_async(lambda: _set_youtrack_in_review(tid), 0)
+            def _maybe_post_comment():
+                if _post_comments_enabled():
+                    comment_text = desc
+                    sublime.set_timeout_async(
+                        lambda: self._post_comment(tid, comment_text), 0
+                    )
 
-            # Post comment if enabled
-            if _post_comments_enabled():
-                comment_text = desc
-                sublime.set_timeout_async(
-                    lambda: self._post_comment(tid, comment_text), 0
-                )
+            if desc_upper in ("DONE", "REVIEW"):
+                action = "Done" if desc_upper == "DONE" else "In Review"
+                items = [
+                    [f"Set YouTrack {tid} → {action}", "Confirm state change"],
+                    ["Skip YouTrack state change", "Keep local note only"],
+                ]
+
+                def on_pick(index: int):
+                    if index == 0:
+                        if desc_upper == "DONE":
+                            sublime.set_timeout_async(
+                                lambda: _set_youtrack_done(tid), 0
+                            )
+                        else:
+                            sublime.set_timeout_async(
+                                lambda: _set_youtrack_in_review(tid), 0
+                            )
+                    _maybe_post_comment()
+
+                self.window.show_quick_panel(items, on_pick)
+            else:
+                _maybe_post_comment()
 
     def _post_comment(self, ticket_id: str, text: str) -> None:
         ok = _yt_add_comment(ticket_id, text)
@@ -2778,6 +2870,12 @@ class NotesOpenIssueCommand(sublime_plugin.WindowCommand):
         tid = raw.strip().upper()
         if not tid:
             sublime.status_message("Notes: no ticket ID entered - cancelled.")
+            return
+        if not _ISSUE_ID_RE.match(tid):
+            sublime.error_message(
+                "Notes - invalid ticket ID.\n\n"
+                "Expected form: PROJ-1234"
+            )
             return
         url = f"{self._base}{tid}"
         _open_in_browser(url)

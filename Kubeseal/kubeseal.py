@@ -211,15 +211,29 @@ def looks_like_already_encrypted_blob(text):
 
 
 def validate_k8s_dns_label(value, field_name):
-    """Return error string or None. RFC 1123 subdomain / label checks."""
+    """
+    Return error string or None.
+
+    Kubernetes namespaces (and most secret names) are RFC 1123 DNS *labels*:
+    lowercase alphanumeric and '-', max 63, no dots.
+    """
     if not value:
         return '{} cannot be empty'.format(field_name)
+    if field_name in ('namespace', 'secret name', 'name'):
+        if len(value) > 63:
+            return '{} is too long (max 63)'.format(field_name)
+        if not _RFC1123_NAME.match(value):
+            return (
+                "{} must be a valid DNS label (lowercase alphanumeric and '-', "
+                "max 63, no dots; e.g. my-namespace)".format(field_name)
+            )
+        return None
     if len(value) > 253:
         return '{} is too long (max 253)'.format(field_name)
     if not _RFC1123_DNS.match(value):
         return (
-            '{} must be a valid DNS subdomain (lowercase alphanumeric and \'-\', '
-            'e.g. my-namespace)'.format(field_name)
+            "{} must be a valid DNS subdomain (lowercase alphanumeric and '-', "
+            "e.g. my.namespace.example)".format(field_name)
         )
     return None
 
@@ -374,10 +388,47 @@ class KubesealCommand(sublime_plugin.TextCommand):
         }
 
     def show_error(self, message):
-        sublime.error_message('Kubeseal Error: {}'.format(message))
+        msg = '' if message is None else str(message)
+        if len(msg) > 1200:
+            msg = msg[:1200] + "\n\n... (truncated)"
+        sublime.error_message('Kubeseal Error: {}'.format(msg))
 
     def show_status(self, message):
         sublime.status_message('Kubeseal: {}'.format(message))
+
+    def confirm_quick(self, yes_caption, detail, on_yes, on_no=None):
+        """
+        Yes/Cancel via quick_panel (Command Palette–style).
+
+        Prefer this over sublime.ok_cancel_dialog: native sheets force mouse
+        focus and can hard-exit ST4 on macOS when mixed with other UI.
+        """
+        window = self.view.window() if self.view is not None else None
+        if window is None:
+            self.show_error('No active window')
+            if on_no:
+                on_no()
+            return
+
+        items = [
+            [yes_caption, detail],
+            ['Cancel', 'Abort Kubeseal'],
+        ]
+
+        def picked(index):
+            if index == 0:
+                on_yes()
+            else:
+                if on_no is not None:
+                    on_no()
+                else:
+                    self.show_status('Cancelled')
+
+        # Defer so we never stack UI transitions in the same event turn.
+        sublime.set_timeout(
+            lambda: window.show_quick_panel(items, picked),
+            10,
+        )
 
     def remember_stage(self, stage_name):
         settings = sublime.load_settings('Kubeseal.sublime-settings')
@@ -393,28 +444,46 @@ class KubesealCommand(sublime_plugin.TextCommand):
         return find_kubeseal_binary()
 
     def extract_metadata_from_file(self):
-        """Extract namespace and secret name from current file's YAML metadata."""
+        """Extract metadata.name / metadata.namespace (first document only)."""
         try:
             file_content = self.view.substr(sublime.Region(0, self.view.size()))
             namespace = None
             secret_name = None
-            namespace_pattern = r'^\s*namespace:\s*[\'"]?([^\s\'"#]+)[\'"]?'
-            name_pattern = r'^\s*name:\s*[\'"]?([^\s\'"#]+)[\'"]?'
             in_metadata = False
+            meta_indent = None
 
             for line in file_content.split('\n'):
+                if line.strip().startswith('#'):
+                    continue
+                # Stop at next document
+                if line.strip() == '---' and (namespace or secret_name or in_metadata):
+                    break
                 if re.match(r'^\s*metadata:\s*$', line):
                     in_metadata = True
+                    meta_indent = len(line) - len(line.lstrip(' '))
                     continue
-                if in_metadata and re.match(r'^[a-zA-Z]', line):
+                if not in_metadata:
+                    continue
+                if not line.strip():
+                    continue
+                indent = len(line) - len(line.lstrip(' '))
+                # Left metadata block
+                if indent <= meta_indent and not line.lstrip().startswith('#'):
                     in_metadata = False
-                if in_metadata:
-                    namespace_match = re.match(namespace_pattern, line)
-                    if namespace_match:
-                        namespace = namespace_match.group(1).strip()
-                    name_match = re.match(name_pattern, line)
-                    if name_match:
-                        secret_name = name_match.group(1).strip()
+                    continue
+                # Only direct children of metadata (indent == meta_indent + 2 typical)
+                m_ns = re.match(r'^\s*namespace:\s*[\'"]?([^\s\'"]+)[\'"]?', line)
+                m_name = re.match(r'^\s*name:\s*[\'"]?([^\s\'"]+)[\'"]?', line)
+                # Ignore nested maps under labels/annotations: require indent close to meta+2
+                if indent > meta_indent + 4:
+                    continue
+                if m_ns and namespace is None:
+                    namespace = m_ns.group(1)
+                elif m_name and secret_name is None:
+                    secret_name = m_name.group(1)
+                if namespace and secret_name:
+                    break
+
             return namespace, secret_name
         except Exception:
             return None, None
@@ -491,6 +560,7 @@ class KubesealCommand(sublime_plugin.TextCommand):
             if err:
                 self.show_error(err)
                 return
+            self.remember_stage(stage['name'])
             on_picked(stage)
             return
 
@@ -501,6 +571,7 @@ class KubesealCommand(sublime_plugin.TextCommand):
                     if err:
                         self.show_error(err)
                         return
+                    self.remember_stage(s['name'])
                     on_picked(s)
                     return
 
@@ -683,14 +754,16 @@ class KubesealEncryptCommand(KubesealCommand):
             self.show_status('Buffer has unsaved changes — sealing current buffer contents')
 
         if os.path.exists(output_path) and self.settings.get('confirm_overwrite_sealedsecret', True):
-            ok = sublime.ok_cancel_dialog(
-                'Output file already exists:\n\n{}\n\nOverwrite?'.format(output_path),
-                'Overwrite'
+            self.confirm_quick(
+                'Overwrite existing SealedSecret',
+                output_path,
+                lambda: self._seal_entire_file_run(file_content, output_path),
             )
-            if not ok:
-                self.show_status('Cancelled')
-                return
+            return
 
+        self._seal_entire_file_run(file_content, output_path)
+
+    def _seal_entire_file_run(self, file_content, output_path):
         kubeseal = self.resolve_kubeseal()
         if not kubeseal:
             self.show_error(
@@ -787,35 +860,63 @@ class KubesealEncryptCommand(KubesealCommand):
 
     def proceed_with_encryption(self, namespace, secret_name):
         max_sel = self.settings.get('max_selections', 10)
-        self.regions = []
+        candidates = []
+        reseal_count = 0
         for region in self.view.sel():
             if region.empty():
                 continue
             text = self.view.substr(region)
             if not text:
                 continue
-            if looks_like_already_encrypted_blob(text) and self.settings.get(
-                'confirm_reseal_selection', True
-            ):
-                ok = sublime.ok_cancel_dialog(
-                    'Selection looks like it is already kubeseal --raw ciphertext.\n\n'
-                    'Encrypting again will nest/corrupt it. Continue anyway?',
-                    'Encrypt anyway'
-                )
-                if not ok:
-                    self.show_status('Cancelled')
-                    return
-            self.regions.append({
+            looks_sealed = looks_like_already_encrypted_blob(text)
+            if looks_sealed:
+                reseal_count += 1
+            candidates.append({
                 'start': region.begin(),
                 'end': region.end(),
                 'expected': text,
+                'looks_sealed': looks_sealed,
             })
-            if len(self.regions) >= max_sel:
+            if len(candidates) >= max_sel:
                 break
 
-        if not self.regions:
+        total_nonempty = sum(
+            1 for r in self.view.sel() if (not r.empty()) and self.view.substr(r)
+        )
+        if total_nonempty > max_sel:
+            self.show_status(
+                'Encrypting first {} of {} selections (max_selections)'.format(
+                    max_sel, total_nonempty
+                )
+            )
+
+        if not candidates:
             self.show_error('No non-empty selection to encrypt')
             return
+
+        need_reseal_confirm = (
+            reseal_count > 0
+            and self.settings.get('confirm_reseal_selection', True)
+        )
+        if need_reseal_confirm:
+            self.confirm_quick(
+                'Encrypt anyway ({} selection(s) look sealed)'.format(reseal_count),
+                'Re-encrypting nest/corrupt existing kubeseal --raw ciphertext',
+                lambda: self._encrypt_candidates(candidates, namespace, secret_name),
+            )
+            return
+
+        self._encrypt_candidates(candidates, namespace, secret_name)
+
+    def _encrypt_candidates(self, candidates, namespace, secret_name):
+        self.regions = [
+            {
+                'start': c['start'],
+                'end': c['end'],
+                'expected': c['expected'],
+            }
+            for c in candidates
+        ]
 
         kubeseal = self.resolve_kubeseal()
         if not kubeseal:
@@ -909,15 +1010,18 @@ class KubesealDecryptCommand(KubesealCommand):
 
         # Safety: selection should look like ciphertext, not a whole YAML doc by mistake
         if '\n' in selected_text.strip() and 'kind:' in selected_text:
-            ok = sublime.ok_cancel_dialog(
-                'Selection looks like a full YAML document, not a single encrypted blob.\n\n'
-                'Raw decrypt expects the ciphertext string only. Continue anyway?',
-                'Continue'
+            self.selected_encrypted_text = selected_text.strip()
+            self.confirm_quick(
+                'Continue decrypt (selection looks like YAML)',
+                'Raw decrypt expects a single ciphertext blob, not a full document',
+                self._start_decrypt_after_confirm,
             )
-            if not ok:
-                return
+            return
 
         self.selected_encrypted_text = selected_text.strip()
+        self._start_decrypt_after_confirm()
+
+    def _start_decrypt_after_confirm(self):
         self.pick_stage(
             need_cert=False,
             need_private_key=True,

@@ -1,57 +1,54 @@
 # Kubeapply
 
-Apply the currently open Kubernetes YAML from Sublime Text 4, with safety checks.
+Apply the currently open Kubernetes YAML from Sublime Text 4, with hard safety locks.
 
 ## Commands (Cmd+Shift+P / Ctrl+Shift+P)
 
 | Command | What it does |
 |---------|----------------|
 | **Kubeapply: Apply Open File** | Pick context → namespace if needed → dry-run + diff + confirm → `kubectl apply` |
-| **Kubeapply: Dry-Run Open File** | Same prompts, server-side dry-run only |
-| **Kubeapply: Diff Open File** | Same prompts, `kubectl diff` only |
+| **Kubeapply: Dry-Run Open File** | Read-only: context/namespace prompts → server-side dry-run (never creates namespaces) |
+| **Kubeapply: Diff Open File** | Read-only: context/namespace prompts → `kubectl diff` (never creates namespaces) |
 | **Kubeapply: Open Settings** | User settings |
 
-## Flow
+## Hard safety locks (cannot be disabled)
 
-1. Parses the open buffer (multi-doc YAML; no PyYAML required).
-2. Quick-panel of **kubectl contexts** (not the bottom input line).
-3. If a namespaced kind has no `metadata.namespace`, quick-panel of namespaces (or type one).
-4. Verifies target namespace(s) exist; if missing, prompts **Create namespace** then continues.
-5. Safety before apply:
-   - Warn on unsaved buffer (quick_panel — native sheets crash ST4 on macOS)
-   - Extra gate for contexts matching `*prod*` patterns (type context name)
-   - Missing namespaces: quick_panel **Create namespace**, then continue
-   - `kubectl get` to classify CREATE vs UPDATE
-   - `kubectl apply --dry-run=server` (blocks apply on failure; report tab + status bar)
-   - **`kubectl diff` tab** (Diff syntax highlighting) opens **before** confirm when updating existing resources
-   - Confirm via quick_panel (“Reviewed diff — apply…”); second confirm when overwriting
-   - Post-apply result tab after apply completes
-6. Always passes `--context` explicitly. Never uses `--force`.
+- Always pass explicit `--context` (picker always matches kubectl target)
+- Always run `kubectl apply --dry-run=server` before real apply
+- Always require quick-panel confirmation before apply
+- Never pass `--force` / `--force-conflicts`
+- Always apply a **frozen buffer snapshot** (temp file), never a potentially stale on-disk path
+- One interactive flow at a time
+- Refuse apply when resource existence could not be verified (`block_on_unverified_resources`)
+- Dry-Run / Diff **never** create namespaces (Apply may, after confirm)
 
-**macOS / ST4 note:** This package avoids `ok_cancel_dialog` / `error_message` / `message_dialog` in interactive flows. Dismissing those native sheets and then opening a quick_panel or new file can hard-exit Sublime Text 4.
+## Flow (Apply)
 
-## Install (manual)
+1. Parses the open **buffer** (multi-doc YAML; no PyYAML required).
+2. Quick-panel of **kubectl contexts**.
+3. If a namespaced kind has no `metadata.namespace`, pick/type a namespace (injected into the temp YAML — not via `kubectl -n`).
+4. Verifies target namespace(s) exist; if missing, prompts **Create namespace** (Apply only).
+5. Before apply:
+   - Warn on unsaved buffer
+   - Extra gate for contexts matching `*prod*` / `*prd*` / `*live*` (type context name)
+   - `kubectl get` to classify CREATE vs UPDATE (unverified → block)
+   - Server-side dry-run (blocks on failure)
+   - Diff tab before confirm when updating
+   - Confirm (+ second confirm on overwrite)
+   - Secret resources noted in the summary (plaintext may appear in tabs)
 
-Copy this `kubeapply` folder into your Sublime Text `Packages` directory:
-
-| Platform | Path |
-|----------|------|
-| **Windows** | `%APPDATA%\Sublime Text\Packages\` |
-| **Mac** | `~/Library/Application Support/Sublime Text/Packages/` |
-| **Linux** | `~/.config/sublime-text/Packages/` |
-
-Restart Sublime Text (or reload packages).
+**macOS / ST4 note:** Interactive confirms use `quick_panel` / report tabs. Native sheets after `new_file` can hard-exit ST4.
 
 ## Settings
 
 Preferences → Package Settings → Kubeapply
 
-Notable defaults:
-
-- `dry_run_before_apply`: true
-- `show_diff_before_apply`: true
-- `dangerous_context_patterns`: `*prod*`, `*production*`, …
-- `dangerous_context_require_type_name`: true
+| Setting | Notes |
+|---------|--------|
+| `dangerous_context_patterns` | Extra type-to-confirm contexts |
+| `block_on_unverified_resources` | Default true — refuse apply on UNKNOWN existence |
+| `warn_secret_resources` | Default true |
+| `show_diff_before_apply` | Default true |
 
 ## Requirements
 

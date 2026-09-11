@@ -3,23 +3,22 @@ Kubeapply Plugin for Sublime Text
 
 Thank you for installing Kubeapply.
 
+Hard safety locks (always on):
+- Explicit --context on every kubectl call
+- Server-side dry-run before apply
+- Confirmation before apply
+- Never --force
+- Apply uses a frozen buffer snapshot (temp file)
+- Dry-Run / Diff never create namespaces
+- Unverified resources block apply by default
+
 Requirements:
-- kubectl installed and available on PATH (or set kubectl_path in settings)
-- A valid kubeconfig with at least one context
+- kubectl on PATH (or set kubectl_path)
+- Valid kubeconfig with at least one context
 
 Usage:
 1. Open a Kubernetes YAML manifest
-2. Cmd+Shift+P (Mac) / Ctrl+Shift+P (Win/Linux)
-3. Run "Kubeapply: Apply Open File"
-4. Pick a context from the quick panel
-5. If a namespaced kind has no metadata.namespace, pick a namespace
-6. Review the DIFF tab (syntax-highlighted) and confirmation prompts before apply
-
-Safety defaults:
-- Explicit --context on every kubectl call
-- Server-side dry-run before apply
-- kubectl diff shown before overwriting existing resources
-- Extra confirmation for contexts matching *prod* patterns
-- Never uses --force
+2. Cmd+Shift+P → "Kubeapply: Apply Open File"
+3. Pick context → review diff/dry-run → confirm
 
 Settings: Preferences → Package Settings → Kubeapply

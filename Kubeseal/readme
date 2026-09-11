@@ -13,8 +13,9 @@ Usage:
 
 Safety:
 - Refuses to re-seal a SealedSecret
-- Confirms before overwriting *-sealedsecret.yaml
-- Confirms if selection already looks encrypted
+- Overwrite / reseal / YAML-decrypt warnings use a **quick panel**
+  (same UI family as Cmd+Shift+P — keyboard: arrows + Enter / Esc)
+  instead of native macOS pop-up dialogs
 - Decrypt opens a scratch buffer (harder to accidentally commit plaintext)
 - Concurrent encrypt/decrypt operations are blocked
 

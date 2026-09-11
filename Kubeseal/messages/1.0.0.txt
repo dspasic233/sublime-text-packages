@@ -1,0 +1,7 @@
+Kubeseal 1.0.0
+==============
+
+- Stage-based encrypt/decrypt with quick-panel key selection
+- Full-file Secret → SealedSecret flow
+- Automatic base64 decode of Secret.data on decrypt
+- Safety confirms for reseal / overwrite

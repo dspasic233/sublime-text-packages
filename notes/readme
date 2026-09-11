@@ -88,6 +88,9 @@ Keep `Packages/User/ST4Notes.sublime-settings` for your token and personal overr
 ## Safety
 
 - `youtrack_base` must be `https://` (http rejected)
-- Loopback / private hostnames for YouTrack are rejected
+- Loopback / private / CGNAT / `.local` / metadata hostnames rejected
+- YouTrack API calls refuse HTTP redirects (Bearer is not forwarded)
 - Default `post_comments` is `false`
 - Package defaults ship with an empty token
+- Magic note text `DONE` / `REVIEW` asks before changing YouTrack state
+- Keep tokens only in `Packages/User/ST4Notes.sublime-settings` (never commit)
