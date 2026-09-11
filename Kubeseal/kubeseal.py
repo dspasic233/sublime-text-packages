@@ -18,6 +18,7 @@ import os
 import re
 import json
 import base64
+from datetime import datetime
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +170,37 @@ def derive_sealedsecret_output_path(input_path):
         out_name = name + '-sealedsecret.yaml'
 
     return os.path.join(directory, out_name)
+
+
+def derive_sealedsecret_backup_path(output_path):
+    """
+    Backup path for an existing sealedsecret file: .bckp-<oldFileName>
+
+    If that backup already exists, append a timestamp suffix so prior
+    backups are not overwritten.
+    """
+    directory = os.path.dirname(output_path) or '.'
+    basename = os.path.basename(output_path)
+    backup_name = '.bckp-' + basename
+    backup_path = os.path.join(directory, backup_name)
+    if not os.path.exists(backup_path):
+        return backup_path
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    return os.path.join(directory, '.bckp-{}.{}'.format(basename, stamp))
+
+
+def backup_existing_sealedsecret(output_path):
+    """
+    Rename existing sealedsecret to .bckp-<name> before overwrite.
+
+    Returns the backup path, or None if output_path did not exist.
+    Raises OSError on rename failure.
+    """
+    if not output_path or not os.path.exists(output_path):
+        return None
+    backup_path = derive_sealedsecret_backup_path(output_path)
+    os.rename(output_path, backup_path)
+    return backup_path
 
 
 def build_full_seal_command(cert_path):
@@ -379,7 +411,6 @@ class KubesealCommand(sublime_plugin.TextCommand):
             'max_selections': int(settings.get('max_selections', 10) or 10),
             'decode_secret_data': settings.get('decode_secret_data', True),
             'validate_k8s_names': settings.get('validate_k8s_names', True),
-            'confirm_overwrite_sealedsecret': settings.get('confirm_overwrite_sealedsecret', True),
             'confirm_reseal_selection': settings.get('confirm_reseal_selection', True),
             'kubeseal_path': _expand_path(settings.get('kubeseal_path', '') or ''),
             # keep legacy fields for validate / fallbacks
@@ -677,6 +708,11 @@ class KubesealEncryptCommand(KubesealCommand):
             if err:
                 self.show_error(err)
                 return
+        else:
+            err = self._precheck_raw_encrypt()
+            if err:
+                self.show_error(err)
+                return
 
         self.pick_stage(
             need_cert=True,
@@ -684,12 +720,34 @@ class KubesealEncryptCommand(KubesealCommand):
             on_picked=self._on_stage_picked_for_encrypt
         )
 
+    def _precheck_raw_encrypt(self):
+        """
+        Raw --raw encrypt only makes sense inside a SealedSecret document
+        (encryptedData values). Plain Secret templates must use full-file seal.
+        """
+        content = self.view.substr(sublime.Region(0, self.view.size()))
+        if looks_like_plain_secret(content):
+            return (
+                'Raw string encrypt is not allowed in a Secret manifest.\n\n'
+                'Clear the selection and run Encrypt again to seal the whole '
+                'Secret → *-sealedsecret.yaml, or open a SealedSecret to encrypt '
+                'individual encryptedData values with --raw.'
+            )
+        if not looks_like_sealed_secret(content):
+            return (
+                'Raw string encrypt requires an open SealedSecret '
+                '(kind: SealedSecret).\n\n'
+                'For a plain Secret template, clear the selection and seal the '
+                'whole file instead.'
+            )
+        return None
+
     def _precheck_full_file_seal(self):
         file_name = self.view.file_name()
         if not file_name:
             return (
                 'Save the file first (needed to derive *-sealedsecret.yaml output path), '
-                'or select text for raw encrypt.'
+                'or select text for raw encrypt inside a SealedSecret.'
             )
         content = self.view.substr(sublime.Region(0, self.view.size()))
         if not content.strip():
@@ -697,12 +755,14 @@ class KubesealEncryptCommand(KubesealCommand):
         if looks_like_sealed_secret(content):
             return (
                 'This file looks like a SealedSecret already. '
-                'Refusing to seal it again (would nest ciphertext).'
+                'Refusing to seal it again (would nest ciphertext).\n\n'
+                'To encrypt individual values, select the plaintext string and '
+                'use raw encrypt inside this SealedSecret.'
             )
         if not looks_like_plain_secret(content):
             return (
                 'Full-file seal expects a Kubernetes Secret manifest (kind: Secret). '
-                'Select a string for raw encrypt, or open a Secret template.'
+                'Select a string inside a SealedSecret for raw encrypt, or open a Secret template.'
             )
         output_path = derive_sealedsecret_output_path(file_name)
         if os.path.abspath(output_path) == os.path.abspath(file_name):
@@ -753,14 +813,7 @@ class KubesealEncryptCommand(KubesealCommand):
         if self.view.is_dirty():
             self.show_status('Buffer has unsaved changes — sealing current buffer contents')
 
-        if os.path.exists(output_path) and self.settings.get('confirm_overwrite_sealedsecret', True):
-            self.confirm_quick(
-                'Overwrite existing SealedSecret',
-                output_path,
-                lambda: self._seal_entire_file_run(file_content, output_path),
-            )
-            return
-
+        # Existing *-sealedsecret.yaml is auto-backed up to .bckp-<name> (no confirm).
         self._seal_entire_file_run(file_content, output_path)
 
     def _seal_entire_file_run(self, file_content, output_path):
@@ -802,21 +855,39 @@ class KubesealEncryptCommand(KubesealCommand):
                             'stderr: {}'.format(error or '(empty)')
                         )
                         return
+                    backup_path = None
                     try:
+                        if os.path.exists(output_path):
+                            backup_path = backup_existing_sealedsecret(output_path)
                         with open(output_path, 'w', encoding='utf-8') as fh:
                             fh.write(sealed if sealed.endswith('\n') else sealed + '\n')
                     except Exception as e:
-                        self.show_error('Failed to write {}: {}'.format(output_path, e))
+                        self.show_error(
+                            'Failed to write {}{}: {}'.format(
+                                output_path,
+                                ' (after backup {})'.format(backup_path) if backup_path else '',
+                                e,
+                            )
+                        )
                         return
 
                     window = self.view.window()
                     if window:
                         window.open_file(output_path)
-                    self.show_status(
-                        '[{}] Sealed secret written: {}'.format(
-                            self.stage['name'], output_path
+                    if backup_path:
+                        self.show_status(
+                            '[{}] Sealed secret written: {} (previous → {})'.format(
+                                self.stage['name'],
+                                os.path.basename(output_path),
+                                os.path.basename(backup_path),
+                            )
                         )
-                    )
+                    else:
+                        self.show_status(
+                            '[{}] Sealed secret written: {}'.format(
+                                self.stage['name'], output_path
+                            )
+                        )
                 finally:
                     self._end_operation()
 

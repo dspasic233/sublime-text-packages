@@ -43,7 +43,6 @@
     "decrypt_output": "new_tab",
     "decode_secret_data": true,
     "validate_k8s_names": true,
-    "confirm_overwrite_sealedsecret": true,
     "confirm_reseal_selection": true,
     "max_selections": 10,
     "default_namespace": "default",

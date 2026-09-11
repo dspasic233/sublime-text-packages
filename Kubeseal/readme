@@ -7,15 +7,19 @@ Usage:
 - Encrypt selection or whole file → Ctrl+K, Ctrl+E
   → quick panel asks which stage key to use
   → no selection: seals Secret template → sibling *-sealedsecret.yaml
+  → selection: raw --raw encrypt only inside a SealedSecret (encryptedData)
 - Decrypt selection → Ctrl+K, Ctrl+D
   → asks which stage private key to use
   → Secret.data values are auto base64-decoded
 
 Safety:
-- Refuses to re-seal a SealedSecret
-- Overwrite / reseal / YAML-decrypt warnings use a **quick panel**
+- Refuses full-file re-seal of an existing SealedSecret
+- Refuses raw string encrypt unless the open buffer is kind: SealedSecret
+  (plain Secret → clear selection and full-file seal instead)
+- If *-sealedsecret.yaml already exists: auto-rename to .bckp-<oldName> then write
+  (no confirm; timestamp suffix if .bckp- already present)
+- Reseal / YAML-decrypt warnings use a **quick panel**
   (same UI family as Cmd+Shift+P — keyboard: arrows + Enter / Esc)
-  instead of native macOS pop-up dialogs
 - Decrypt opens a scratch buffer (harder to accidentally commit plaintext)
 - Concurrent encrypt/decrypt operations are blocked
 
