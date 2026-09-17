@@ -1,2 +1,16 @@
 [
+    {
+        "keys": ["super+enter"],
+        "command": "notes_commit_description",
+        "context": [
+            { "key": "setting.stnotes_add_description", "operator": "equal", "operand": true }
+        ]
+    },
+    {
+        "keys": ["ctrl+enter"],
+        "command": "notes_commit_description",
+        "context": [
+            { "key": "setting.stnotes_add_description", "operator": "equal", "operand": true }
+        ]
+    }
 ]

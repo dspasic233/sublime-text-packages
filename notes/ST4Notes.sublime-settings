@@ -12,6 +12,12 @@
     // Scopes: Read Issue, Create Issue, Update Issue, Create Comment
     "youtrack_token": "",
 
+    // GitLab base URL for MR hover (https required). Example: "https://gitlab.example.com/"
+    "gitlab_base": "",
+
+    // GitLab personal access token (api / read_api). User settings only — never commit.
+    "gitlab_token": "",
+
     // Default YouTrack project shortName (issue create / import / TODO list).
     "default_project": "",
 
@@ -22,6 +28,10 @@
 
     // When true, Notes - Add also posts the note text as a YouTrack comment.
     "post_comments": false,
+
+    // Multi-line note limits (Notes: Add description scratch)
+    "note_max_lines": 50,
+    "note_max_line_len": 500,
 
     "api_timeout_sec": 10,
     "api_max_retries": 2

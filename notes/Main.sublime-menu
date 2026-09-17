@@ -11,6 +11,10 @@
                         "command": "notes_add"
                     },
                     {
+                        "caption": "Commit Description",
+                        "command": "notes_commit_description"
+                    },
+                    {
                         "caption": "Edit",
                         "command": "notes_edit"
                     },

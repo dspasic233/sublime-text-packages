@@ -45,8 +45,8 @@ contexts:
       scope: keyword.control.stnotes
 
     # ==========================================================================
-    # Bullet lines  - [HH:MM] ...
-    # Timestamp uses constant.numeric -> yellow in all themes
+    # Bullet lines  - [HH:MM] ...  (legacy timestamps still highlighted)
+    # New notes omit HH:MM; bare "- text" is preferred.
     # ==========================================================================
     - match: '^(-)\s+(\[\d{2}:\d{2}\])\s+'
       captures:

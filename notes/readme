@@ -1,96 +1,78 @@
 # ST4Notes
 
-Daily notes + YouTrack integration for Sublime Text 4.
+Daily notes + YouTrack / GitLab integration for Sublime Text 4.
 
-Stores a single plain-text notes file (`.stnotes` / `ST4Notes` syntax), with commands to add/search entries, open tickets, import issues, and optionally post comments back to YouTrack.
+Stores a single plain-text notes file (`ST4Notes` syntax), with commands to add/search entries, open tickets, import issues, optionally post YouTrack comments, and hover GitLab MRs.
 
 ## Commands (Cmd+Shift+P / Ctrl+Shift+P)
 
 | Command | What it does |
 |---------|----------------|
-| **Notes: Add** | Append a timed note (ticket / TODO / OPS / create or import from YouTrack) |
+| **Notes: Add** | Pick ticket → multi-line description scratch → commit |
+| **Notes: Commit Description** | Commit the Add description buffer (also **Cmd/Ctrl+Enter**) |
 | **Notes: Edit** | Open the notes file |
 | **Notes: Search** | Quick-panel search over tickets / TODO / OPS |
 | **Notes: Open Issue** | Open a ticket in the browser (or list YouTrack issues) |
-| **Notes: Weekly Summary** | Scratch view of recent activity |
+| **Notes: Weekly Summary** | Scratch view of recent activity (sorted by **date**, not time) |
 | **Notes: Weekly Search** | Search within the weekly window |
 | **Notes: Create Issue** | Create a YouTrack issue (optional stage sub-tasks) |
 | **Notes: Settings** | Edit package settings |
 
-Also: **Tools → Notes**, and a few entries on the context menu.
+## Notes: Add (multi-line)
 
-## Notes file format
+1. Command Palette → **Notes: Add** → pick ticket / TODO / OPS / YouTrack import  
+2. A scratch buffer opens — **one bullet per line**  
+3. **Cmd+Enter** (Mac) / **Ctrl+Enter** (Win/Linux) or **Notes: Commit Description**
+
+Example result:
 
 ```
-# ==============================================================================
-# 2026.9.11
-# ==============================================================================
 # PROJ-1234:
-- [09:15] [IN PROGRESS] shipped dry-run gate
-- [10:02] [DONE]<< - follow-up with @alice #deploy
+- first line
+- second line
+- [DONE]<<-
 ```
 
-Syntax highlights dates, ticket IDs, state tags (`[DONE]`, `[IN REVIEW]`, …), `@mentions`, `#hashtags`, and URLs. Hover a URL or ticket ID in a notes view to open / preview.
+No `[HH:MM]` timestamps are added (legacy timestamps in old notes still highlight).
+
+## Hover
+
+- **YouTrack** issue URL / ticket id → summary, state, assignee, …  
+- **GitLab MR** URL (`…/-/merge_requests/N`) → status (open/merged/closed), pipeline status, changed files (requires `gitlab_base` + `gitlab_token`)
+  - Click a changed file → browser opens the MR **Changes** tab focused on that file (`#diff-content-{sha1(path)}`)
 
 ## Settings
 
-**Preferences → Package Settings → ST4Notes**
+Preferences → Package Settings → ST4Notes (keep tokens in **User** settings only)
 
-| Key | Default | Notes |
-|-----|---------|--------|
-| `notes_file` | `~/Documents/ST4Notes` | Local notes path (`~` expanded) |
-| `youtrack_base` | `""` | e.g. `https://youtrack.example.com/issue/` (https only) |
-| `youtrack_token` | `""` | Permanent token — **User settings only**, never commit |
-| `default_project` | `""` | YouTrack project shortName |
-| `issue_stages` | `[]` | Optional stage sub-task names |
-| `post_comments` | `false` | Post note text as YouTrack comments on Add |
-| `api_timeout_sec` | `10` | HTTP timeout |
-| `api_max_retries` | `2` | Retries on 429/502/503 |
+| Key | Notes |
+|-----|--------|
+| `notes_file` | Default `~/Documents/ST4Notes` |
+| `youtrack_base` / `youtrack_token` | YouTrack |
+| `gitlab_base` / `gitlab_token` | GitLab MR hover (`read_api`) |
+| `note_max_lines` / `note_max_line_len` | Multi-line Add limits (50 / 500) |
+| `post_comments` | Default `false` |
 
-User overrides live in `Packages/User/ST4Notes.sublime-settings` and merge over package defaults.
+## Safety
 
-## Install (manual)
+- HTTPS-only YouTrack / GitLab bases; private/loopback/CGNAT hosts rejected  
+- Hover / navigate opens **https:// only** (rejects `javascript:` / `file:` / plain http)  
+- API calls refuse HTTP redirects (Bearer / PRIVATE-TOKEN not forwarded)  
+- Notes read-modify-write serialized (`_notes_io_lock`); atomic write + mode `0600`  
+- Notes file hard cap 8 MiB (read/write)  
+- Package defaults ship empty tokens  
+- DONE / REVIEW YouTrack state changes require confirm (single-line only)
 
-Copy this `notes` folder into your Sublime Text `Packages` directory:
+## Install / live symlink
 
-| Platform | Path |
-|----------|------|
-| **Windows** | `%APPDATA%\Sublime Text\Packages\` |
-| **Mac** | `~/Library/Application Support/Sublime Text/Packages/` |
-| **Linux** | `~/.config/sublime-text/Packages/` |
-
-Restart Sublime Text (or Package Control: Satisfy Dependencies / reload).
-
-**Dev symlink:**
+Do **not** keep a second `notes_plugin.py` / `*.sublime-commands` / `ST4Notes.sublime-syntax` under `Packages/User/` (even in a `_disabled_*` folder) — Sublime loads those and duplicates every Command Palette entry.
 
 ```bash
 ln -s "/path/to/sublime-text-packages/notes" \
   "$HOME/Library/Application Support/Sublime Text/Packages/notes"
 ```
 
-### Migrating from Packages/User
-
-If you previously kept `notes_plugin.py` (and related files) under `Packages/User/`, remove those copies after installing this package so commands are not registered twice:
-
-- `notes_plugin.py`
-- `notes_plugin.sublime-commands`
-- `ST4Notes.sublime-syntax`
-- `ST4Notes.sublime-color-scheme`
-- `ST4Notes.tmPreferences`
-
-Keep `Packages/User/ST4Notes.sublime-settings` for your token and personal overrides.
-
 ## Requirements
 
-- Sublime Text 4
-- Optional: YouTrack permanent token for create/import/comment features
-
-## Safety
-
-- `youtrack_base` must be `https://` (http rejected)
-- Loopback / private / CGNAT / `.local` / metadata hostnames rejected
-- YouTrack API calls refuse HTTP redirects (Bearer is not forwarded)
-- Default `post_comments` is `false`
-- Package defaults ship with an empty token
-- Magic note text `DONE` / `REVIEW` asks before changing YouTrack state
-- Keep tokens only in `Packages/User/ST4Notes.sublime-settings` (never commit)
+- Sublime Text 4  
+- Optional YouTrack + GitLab tokens for API features

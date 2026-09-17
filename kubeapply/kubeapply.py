@@ -42,6 +42,42 @@ CLUSTER_SCOPED_KINDS = {
 _FLOW_LOCK = threading.Lock()
 _FLOW_ACTIVE = False
 
+_MAX_MANIFEST_BYTES = 2 * 1024 * 1024  # 2 MiB
+_MAX_RESOURCES = 50
+
+
+def _clamp_timeout(value, default=60, minimum=5, maximum=600):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    if n < minimum:
+        return minimum
+    if n > maximum:
+        return maximum
+    return n
+
+
+def _validate_kubectl_path(path):
+    """
+    Return error string or None.
+    Refuse shell metacharacters; require existing executable when absolute.
+    """
+    if not path or not isinstance(path, str):
+        return "kubectl_path is empty"
+    path = path.strip()
+    if not path:
+        return "kubectl_path is empty"
+    # Never allow shell injection via settings
+    if any(ch in path for ch in (";", "|", "&", "`", "$", "\n", "\r", "\0")):
+        return "kubectl_path contains forbidden characters"
+    if path != "kubectl" and ("/" in path or "\\" in path):
+        if not os.path.isfile(path):
+            return "kubectl_path not found: {}".format(path)
+        if not os.access(path, os.X_OK):
+            return "kubectl_path is not executable: {}".format(path)
+    return None
+
 
 def _try_begin_flow():
     global _FLOW_ACTIVE
@@ -66,7 +102,7 @@ def _settings():
     # - always require confirmation before apply
     return {
         "kubectl_path": s.get("kubectl_path", "kubectl") or "kubectl",
-        "timeout": int(s.get("timeout", 60) or 60),
+        "timeout": _clamp_timeout(s.get("timeout", 60)),
         "always_pass_context": True,
         "dry_run_before_apply": True,
         "show_diff_before_apply": bool(s.get("show_diff_before_apply", True)),
@@ -83,6 +119,7 @@ def _settings():
         ),
         "warn_unsaved_buffer": bool(s.get("warn_unsaved_buffer", True)),
         "warn_secret_resources": bool(s.get("warn_secret_resources", True)),
+        "require_secret_confirm": bool(s.get("require_secret_confirm", True)),
         "block_on_unverified_resources": bool(
             s.get("block_on_unverified_resources", True)
         ),
@@ -93,6 +130,10 @@ def _settings():
         "field_manager": s.get("field_manager", "sublime-kubeapply")
         or "sublime-kubeapply",
         "show_result_in_tab": True,
+        "max_resources": int(s.get("max_resources", _MAX_RESOURCES) or _MAX_RESOURCES),
+        "max_manifest_bytes": int(
+            s.get("max_manifest_bytes", _MAX_MANIFEST_BYTES) or _MAX_MANIFEST_BYTES
+        ),
     }
 
 
@@ -255,6 +296,10 @@ def _is_resource_not_found(text):
 def _write_temp_manifest(content, suffix=".yaml"):
     fd, path = tempfile.mkstemp(prefix="kubeapply-", suffix=suffix)
     try:
+        try:
+            os.fchmod(fd, 0o600)
+        except Exception:
+            pass
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(content)
             if content and not content.endswith("\n"):
@@ -262,6 +307,10 @@ def _write_temp_manifest(content, suffix=".yaml"):
     except Exception:
         try:
             os.close(fd)
+        except Exception:
+            pass
+        try:
+            os.remove(path)
         except Exception:
             pass
         raise
@@ -405,13 +454,42 @@ class _KubeapplyFlow(object):
             sublime.error_message("Kubeapply: current file is empty")
             return
 
+        self.settings = _settings()
+        path_err = _validate_kubectl_path(self.settings["kubectl_path"])
+        if path_err:
+            _end_flow()
+            sublime.error_message("Kubeapply: {}".format(path_err))
+            return
+
         self.manifest_text = self.view.substr(sublime.Region(0, self.view.size()))
+        max_bytes = self.settings.get("max_manifest_bytes", _MAX_MANIFEST_BYTES)
+        if len(self.manifest_text.encode("utf-8")) > max_bytes:
+            _end_flow()
+            sublime.error_message(
+                "Kubeapply: manifest too large (max {} bytes).\n"
+                "Split the file or raise max_manifest_bytes only if intentional.".format(
+                    max_bytes
+                )
+            )
+            return
+
         self.resources = _parse_resources(self.manifest_text)
         if not self.resources:
             _end_flow()
             sublime.error_message(
                 "Kubeapply: no Kubernetes resources found "
                 "(need apiVersion / kind / metadata.name)"
+            )
+            return
+
+        max_res = self.settings.get("max_resources", _MAX_RESOURCES)
+        if len(self.resources) > max_res:
+            _end_flow()
+            sublime.error_message(
+                "Kubeapply: too many resources in buffer ({} > max {}).\n"
+                "Apply smaller documents, or raise max_resources only if intentional.".format(
+                    len(self.resources), max_res
+                )
             )
             return
 
@@ -1257,22 +1335,19 @@ class _KubeapplyFlow(object):
             ok_label = "Apply {} resource(s)".format(len(self.exists_summary))
 
         def after_first_confirm():
-            if updates:
-                names = ", ".join(i["label"] for i in updates[:6])
-                if len(updates) > 6:
-                    names += ", …"
+            secrets = [
+                r
+                for r in self.resources
+                if (r.get("kind") or "").lower() == "secret"
+            ]
+            if secrets and self.settings.get("require_secret_confirm", True):
                 self._confirm_quick(
-                    "Overwrite on '{}' — final confirm".format(self.context),
-                    names
-                    + (
-                        " | Diff tab already shown — proceed only if OK"
-                        if must_review_diff
-                        else ""
-                    ),
-                    self._start_apply_after_confirm,
+                    "Apply {} Secret resource(s) — confirm".format(len(secrets)),
+                    "Plaintext Secret data may appear in kubectl diff / report tabs",
+                    lambda: self._after_secret_confirm(updates),
                 )
                 return
-            self._start_apply_after_confirm()
+            self._after_secret_confirm(updates)
 
         # Confirmation is mandatory (safety lock).
         delay_ms = 80 if show_diff else 10
@@ -1281,6 +1356,27 @@ class _KubeapplyFlow(object):
             self._confirm_quick(ok_label, detail, after_first_confirm)
 
         sublime.set_timeout(show_confirm, delay_ms)
+
+    def _after_secret_confirm(self, updates):
+        if updates:
+            names = ", ".join(i["label"] for i in updates[:6])
+            if len(updates) > 6:
+                names += ", …"
+            must_review_diff = self.settings["show_diff_before_apply"] and bool(
+                self.diff_text
+            )
+            self._confirm_quick(
+                "Overwrite on '{}' — final confirm".format(self.context),
+                names
+                + (
+                    " | Diff tab already shown — proceed only if OK"
+                    if must_review_diff
+                    else ""
+                ),
+                self._start_apply_after_confirm,
+            )
+            return
+        self._start_apply_after_confirm()
 
     def _start_apply_after_confirm(self):
         sublime.status_message("Kubeapply: applying...")

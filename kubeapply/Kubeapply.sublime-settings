@@ -34,8 +34,15 @@
     // Warn in the apply summary when Secret resources are present
     "warn_secret_resources": true,
 
+    // Extra quick-panel confirm when applying Secret resources
+    "require_secret_confirm": true,
+
     // Refuse apply if kubectl could not verify resource existence (unknown kinds/auth)
     "block_on_unverified_resources": true,
+
+    // Soft caps (raise only intentionally)
+    "max_resources": 50,
+    "max_manifest_bytes": 2097152,
 
     // Prefer listing namespaces via quick panel; fallback to input if list fails
     "namespace_picker": "quick_panel",

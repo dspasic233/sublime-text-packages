@@ -16,8 +16,12 @@ Safety:
 - Refuses full-file re-seal of an existing SealedSecret
 - Refuses raw string encrypt unless the open buffer is kind: SealedSecret
   (plain Secret → clear selection and full-file seal instead)
-- If *-sealedsecret.yaml already exists: auto-rename to .bckp-<oldName> then write
-  (no confirm; timestamp suffix if .bckp- already present)
+- Refuses empty Secret templates (no data / stringData values)
+- Caps input size (2 MiB) and subprocess timeout (5–300s)
+- If *-sealedsecret.yaml already exists: auto-rename to .bckp-<oldName> then
+  atomic write (temp + replace; timestamp suffix if .bckp- already present)
+- Private keys that are group/world-readable are rejected (chmod 600)
+- Decrypt confirms non-ciphertext selections and prod-named stages
 - Reseal / YAML-decrypt warnings use a **quick panel**
   (same UI family as Cmd+Shift+P — keyboard: arrows + Enter / Esc)
 - Decrypt opens a scratch buffer (harder to accidentally commit plaintext)

@@ -21,6 +21,9 @@ Apply the currently open Kubernetes YAML from Sublime Text 4, with hard safety l
 - One interactive flow at a time
 - Refuse apply when resource existence could not be verified (`block_on_unverified_resources`)
 - Dry-Run / Diff **never** create namespaces (Apply may, after confirm)
+- Temp manifests written mode `0600`; kubectl path validated (no shell metacharacters)
+- Caps: max 50 resources / 2 MiB manifest (configurable); timeout clamped 5–600s
+- Extra confirm when applying `Secret` resources (`require_secret_confirm`)
 
 ## Flow (Apply)
 
@@ -48,7 +51,9 @@ Preferences → Package Settings → Kubeapply
 | `dangerous_context_patterns` | Extra type-to-confirm contexts |
 | `block_on_unverified_resources` | Default true — refuse apply on UNKNOWN existence |
 | `warn_secret_resources` | Default true |
+| `require_secret_confirm` | Default true — extra confirm for Secret applies |
 | `show_diff_before_apply` | Default true |
+| `max_resources` / `max_manifest_bytes` | Soft caps (50 / 2 MiB) |
 
 ## Requirements
 

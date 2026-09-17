@@ -18,6 +18,7 @@ import os
 import re
 import json
 import base64
+import tempfile
 from datetime import datetime
 
 
@@ -229,6 +230,54 @@ def looks_like_plain_secret(content):
     return has_secret_kind and not looks_like_sealed_secret(content)
 
 
+def secret_has_payload(content):
+    """
+    True when a Secret manifest has at least one data / stringData entry.
+    Prevents sealing empty templates by accident.
+    """
+    if not content:
+        return False
+    # JSON Secret
+    try:
+        obj = json.loads(content.strip())
+    except (ValueError, TypeError):
+        obj = None
+    if isinstance(obj, dict):
+        for key in ('data', 'stringData'):
+            block = obj.get(key)
+            if isinstance(block, dict) and any(
+                isinstance(v, str) and v != '' for v in block.values()
+            ):
+                return True
+        return False
+
+    # YAML-ish: look for indented key under data: / stringData:
+    in_block = False
+    block_indent = None
+    for line in content.split('\n'):
+        if re.match(r'^(data|stringData):\s*$', line):
+            in_block = True
+            block_indent = None
+            continue
+        if not in_block:
+            continue
+        if re.match(r'^\s*#', line) or line.strip() == '':
+            continue
+        m = re.match(r'^(\s*)([^:\s][^:]*):\s*(.*)$', line)
+        if not m:
+            in_block = False
+            continue
+        indent_len = len(m.group(1))
+        if block_indent is None:
+            block_indent = indent_len
+        if indent_len < block_indent:
+            in_block = False
+            continue
+        if indent_len == block_indent and m.group(3).strip() != '':
+            return True
+    return False
+
+
 def looks_like_already_encrypted_blob(text):
     """Heuristic: selection already looks like kubeseal --raw output."""
     if not text:
@@ -240,6 +289,67 @@ def looks_like_already_encrypted_blob(text):
     if s.startswith('Ag') and re.match(r'^[A-Za-z0-9+/=]+$', s):
         return True
     return False
+
+
+def clamp_timeout(value, default=30, minimum=5, maximum=300):
+    """Keep subprocess timeouts in a sane range."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    if n < minimum:
+        return minimum
+    if n > maximum:
+        return maximum
+    return n
+
+
+_MAX_KUBESEAL_INPUT_BYTES = 2 * 1024 * 1024  # 2 MiB
+
+
+def private_key_world_readable(path):
+    """True when private key is group/world-readable (Unix)."""
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        mode = os.stat(path).st_mode
+    except OSError:
+        return False
+    # 0o044 = group/other read
+    return bool(mode & 0o044)
+
+
+def write_sealed_output_atomic(output_path, content):
+    """
+    Write sealed YAML via temp file + replace.
+    Caller is responsible for backing up any pre-existing output_path.
+    """
+    directory = os.path.dirname(output_path) or '.'
+    fd, tmp_path = tempfile.mkstemp(
+        prefix='.kubeseal-tmp-',
+        suffix='.yaml',
+        dir=directory,
+    )
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(content if content.endswith('\n') else content + '\n')
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_path, output_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def stage_name_looks_prod(stage_name):
+    name = (stage_name or '').lower()
+    return any(tok in name for tok in ('prod', 'production', 'prd', 'live'))
 
 
 def validate_k8s_dns_label(value, field_name):
@@ -404,7 +514,7 @@ class KubesealCommand(sublime_plugin.TextCommand):
             'default_stage': (settings.get('default_stage') or '').strip(),
             'ask_stage_every_time': settings.get('ask_stage_every_time', True),
             'last_stage': (settings.get('last_stage') or '').strip(),
-            'timeout': int(settings.get('timeout', 30) or 30),
+            'timeout': clamp_timeout(settings.get('timeout', 30), default=30),
             'decrypt_output': settings.get('decrypt_output', 'new_tab'),
             'default_namespace': settings.get('default_namespace', 'default'),
             'default_secret_name': settings.get('default_secret_name', 'mysecret'),
@@ -669,6 +779,11 @@ class KubesealCommand(sublime_plugin.TextCommand):
                 return 'Stage "{}" private key not found:\n{}'.format(stage['name'], path)
             if not os.access(path, os.R_OK):
                 return 'Stage "{}" private key is not readable:\n{}'.format(stage['name'], path)
+            if private_key_world_readable(path):
+                return (
+                    'Stage "{}" private key is group/world-readable:\n{}\n\n'
+                    'Fix with: chmod 600 "{}"'
+                ).format(stage['name'], path, path)
         return None
 
 
@@ -764,9 +879,24 @@ class KubesealEncryptCommand(KubesealCommand):
                 'Full-file seal expects a Kubernetes Secret manifest (kind: Secret). '
                 'Select a string inside a SealedSecret for raw encrypt, or open a Secret template.'
             )
+        if not secret_has_payload(content):
+            return (
+                'Secret has no non-empty data / stringData values — nothing useful to seal.\n'
+                'Add secret keys first, then Encrypt again.'
+            )
+        if len(content.encode('utf-8')) > _MAX_KUBESEAL_INPUT_BYTES:
+            return (
+                'Secret template is too large (max {} bytes). '
+                'Split secrets or seal offline.'
+            ).format(_MAX_KUBESEAL_INPUT_BYTES)
         output_path = derive_sealedsecret_output_path(file_name)
         if os.path.abspath(output_path) == os.path.abspath(file_name):
             return 'Refusing to overwrite the source file with sealed output'
+        out_dir = os.path.dirname(output_path) or '.'
+        if not os.path.isdir(out_dir):
+            return 'Output directory does not exist:\n{}'.format(out_dir)
+        if not os.access(out_dir, os.W_OK):
+            return 'Output directory is not writable:\n{}'.format(out_dir)
         return None
 
     def _on_stage_picked_for_encrypt(self, stage):
@@ -859,8 +989,7 @@ class KubesealEncryptCommand(KubesealCommand):
                     try:
                         if os.path.exists(output_path):
                             backup_path = backup_existing_sealedsecret(output_path)
-                        with open(output_path, 'w', encoding='utf-8') as fh:
-                            fh.write(sealed if sealed.endswith('\n') else sealed + '\n')
+                        write_sealed_output_atomic(output_path, sealed)
                     except Exception as e:
                         self.show_error(
                             'Failed to write {}{}: {}'.format(
@@ -1089,6 +1218,16 @@ class KubesealDecryptCommand(KubesealCommand):
             )
             return
 
+        # Short / non-Ag blobs are usually plaintext — confirm before using private key
+        if not looks_like_already_encrypted_blob(selected_text.strip()):
+            self.selected_encrypted_text = selected_text.strip()
+            self.confirm_quick(
+                'Continue decrypt (selection does not look like kubeseal ciphertext)',
+                'Expected long base64 starting with Ag — wrong selection wastes private-key use',
+                self._start_decrypt_after_confirm,
+            )
+            return
+
         self.selected_encrypted_text = selected_text.strip()
         self._start_decrypt_after_confirm()
 
@@ -1104,6 +1243,16 @@ class KubesealDecryptCommand(KubesealCommand):
         self.settings['private_key_path'] = stage['private_key_path']
         self.show_status('Using stage: {}'.format(stage['name']))
 
+        if stage_name_looks_prod(stage.get('name')):
+            self.confirm_quick(
+                "Decrypt with '{}' private key".format(stage['name']),
+                'Stage name looks production — plaintext will appear in a scratch tab',
+                self._continue_decrypt_after_prod_confirm,
+            )
+            return
+        self._continue_decrypt_after_prod_confirm()
+
+    def _continue_decrypt_after_prod_confirm(self):
         namespace, secret_name = self.extract_metadata_from_file()
         if namespace and secret_name:
             if self.settings.get('validate_k8s_names', True):

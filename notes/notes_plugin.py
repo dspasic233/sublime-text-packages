@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen, build_opener, HTTPSHandler, HTTPRed
 from urllib.error   import URLError, HTTPError
 from urllib.parse   import quote, urlparse
 import ipaddress
+import hashlib
 
 import sublime
 import sublime_plugin
@@ -70,6 +71,18 @@ log = logging.getLogger("ST4Notes")
 # ---------------------------------------------------------------------------
 
 def _open_in_browser(url: str) -> None:
+    """Open URL in the system browser. HTTPS only (rejects javascript:/file:/data:)."""
+    url = (url or "").strip()
+    if not url:
+        return
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "https":
+        log.warning("Refusing to open non-https URL: %s", parsed.scheme or "(none)")
+        sublime.status_message("ST4Notes: only https:// links can be opened")
+        return
+    if not parsed.hostname:
+        sublime.status_message("ST4Notes: URL has no hostname")
+        return
     try:
         if sys.platform == "darwin":
             subprocess.Popen(["open", url])
@@ -82,6 +95,20 @@ def _open_in_browser(url: str) -> None:
             webbrowser.open(url)
         except Exception as exc:
             log.error("Cannot open browser: %s", exc)
+
+
+def _gitlab_diff_file_hash(file_path: str) -> str:
+    """GitLab MR diffs anchor id: #diff-content-{sha1(path)}."""
+    return hashlib.sha1(file_path.encode("utf-8")).hexdigest()
+
+
+def _mr_file_diffs_url(mr_url: str, file_path: str) -> str:
+    """URL to MR Changes tab scrolled to ``file_path``."""
+    base = (mr_url or "").split("#", 1)[0].rstrip("/")
+    if base.endswith("/diffs"):
+        base = base[: -len("/diffs")]
+    h = _gitlab_diff_file_hash(file_path)
+    return f"{base}/diffs#diff-content-{h}"
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +174,38 @@ def _post_comments_enabled() -> bool:
     if isinstance(val, bool):
         return val
     return False
+
+
+def _gitlab_base() -> str:
+    base = _settings().get("gitlab_base", "").strip()
+    if base and not base.endswith("/"):
+        base += "/"
+    return base
+
+
+def _gitlab_api_root() -> str:
+    base = _gitlab_base()
+    if not base:
+        return ""
+    return base.rstrip("/") + "/api/v4"
+
+
+def _gitlab_token() -> str:
+    return _settings().get("gitlab_token", "").strip()
+
+
+def _note_max_lines() -> int:
+    try:
+        return max(1, min(200, int(_settings().get("note_max_lines", 50))))
+    except (TypeError, ValueError):
+        return 50
+
+
+def _note_max_line_len() -> int:
+    try:
+        return max(40, min(2000, int(_settings().get("note_max_line_len", 500))))
+    except (TypeError, ValueError):
+        return 500
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +333,35 @@ def _is_youtrack_host(url: str) -> bool:
     return url_host.lower() == yt_host.lower()
 
 
+def _validate_gitlab_base(base: str) -> str | None:
+    """Reuse YouTrack HTTPS / private-host rules for gitlab_base."""
+    if not base:
+        return None
+    as_yt_shape = base if "/issue" in base else base.rstrip("/") + "/issue/"
+    return _validate_youtrack_base(as_yt_shape)
+
+
+def _gitlab_host() -> str:
+    base = _gitlab_base()
+    if not base:
+        return ""
+    try:
+        return urlparse(base).hostname or ""
+    except Exception:
+        return ""
+
+
+def _is_gitlab_host(url: str) -> bool:
+    gl_host = _gitlab_host()
+    if not gl_host:
+        return False
+    try:
+        url_host = urlparse(url).hostname or ""
+    except Exception:
+        return False
+    return url_host.lower() == gl_host.lower()
+
+
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
@@ -281,10 +369,6 @@ def _is_youtrack_host(url: str) -> bool:
 def _today_header() -> str:
     now = datetime.now()
     return f"# {now.year}.{now.month}.{now.day}"
-
-
-def _now_hhmm() -> str:
-    return datetime.now().strftime("%H:%M")
 
 
 _SEP    = "# " + "=" * 77
@@ -321,8 +405,11 @@ def _is_weekly_summary_view(view: sublime.View) -> bool:
 # File I/O  (atomic write) + mtime-keyed read cache
 # ---------------------------------------------------------------------------
 
+# Serializes read-modify-write so concurrent Notes: Add cannot drop lines.
+_notes_io_lock      = threading.Lock()
 _notes_cache_lock   = threading.Lock()
 _notes_cache_mtime: float | None = None
+_NOTES_MAX_FILE_BYTES = 8 * 1024 * 1024  # 8 MiB — refuse runaway notes files
 _notes_cache_lines: list[str]    = []
 
 
@@ -334,6 +421,16 @@ def _read_notes(force: bool = False) -> list[str]:
 
     if not os.path.exists(_notes_file()):
         return []
+
+    try:
+        size = os.path.getsize(_notes_file())
+    except OSError:
+        size = 0
+    if size > _NOTES_MAX_FILE_BYTES:
+        raise RuntimeError(
+            f"Notes file is too large ({size} bytes; max {_NOTES_MAX_FILE_BYTES}). "
+            "Archive old sections before continuing."
+        )
 
     try:
         mtime = os.path.getmtime(_notes_file())
@@ -373,6 +470,11 @@ def _write_notes(lines: list[str]) -> None:
         ) from exc
 
     content = "\n".join(lines) + ("\n" if lines else "")
+    if len(content.encode("utf-8")) > _NOTES_MAX_FILE_BYTES:
+        raise RuntimeError(
+            f"Refusing to write notes file over {_NOTES_MAX_FILE_BYTES} bytes. "
+            "Archive old sections first."
+        )
     try:
         fd, tmp_path = tempfile.mkstemp(dir=notes_dir, prefix=".ST4Notes_tmp_")
         try:
@@ -380,6 +482,10 @@ def _write_notes(lines: list[str]) -> None:
                 fh.write(content)
                 fh.flush()
                 os.fsync(fh.fileno())
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
             os.replace(tmp_path, _notes_file())
         except Exception:
             try:
@@ -1539,99 +1645,279 @@ def _build_hover_html(
 # Core business logic
 # ---------------------------------------------------------------------------
 
-def _build_entry(description: str) -> str:
-    desc = description.strip()
-    tag  = desc.upper()
+def _normalize_note_lines(description: str) -> list[str]:
+    """
+    Split description into note lines.
+
+    Each non-empty line becomes one bullet. Leading "- " is stripped so users
+    may paste either plain lines or already-bulleted text. Comment lines
+    starting with "#" are ignored (scratch-buffer instructions).
+    """
+    max_lines = _note_max_lines()
+    max_len = _note_max_line_len()
+    out: list[str] = []
+    for raw in (description or "").splitlines():
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("- "):
+            s = s[2:].strip()
+        elif s == "-":
+            continue
+        if not s:
+            continue
+        if len(s) > max_len:
+            s = s[: max_len - 1] + "…"
+        out.append(s)
+        if len(out) >= max_lines:
+            break
+    return out
+
+
+def _format_bullet_body(description: str) -> str:
+    tag = description.strip().upper()
     if tag == "DONE":
-        body = "[DONE]<<-"
-    elif tag == "EVAL":
-        body = "[EVAL]"
-    elif tag == "CREATED":
-        body = "[CREATED]"
-    elif tag == "REVIEW":
-        body = "[IN REVIEW]"
+        return "[DONE]<<-"
+    if tag == "EVAL":
+        return "[EVAL]"
+    if tag == "CREATED":
+        return "[CREATED]"
+    if tag == "REVIEW":
+        return "[IN REVIEW]"
+    return description.strip()
+
+
+def _build_entries(description: str) -> list[str]:
+    """Build bullet lines without HH:MM timestamps."""
+    lines = _normalize_note_lines(description)
+    return [f"- {_format_bullet_body(line)}" for line in lines]
+
+
+def _insert_entries_for_ticket(ticket_id: str, entries: list[str]) -> None:
+    if not entries:
+        raise RuntimeError("Note description produced no lines.")
+
+    lines = _read_notes(force=True)
+
+    (_open_sep, hdr_idx, _hdr_close, content_start,
+     content_end, _next_sep) = _find_today_section(lines)
+
+    if hdr_idx is None:
+        new_section: list[str] = [
+            _SEP,
+            _today_header(),
+            _SEP,
+            "",
+            f"# {ticket_id}:",
+            *entries,
+            "",
+        ]
+        if lines and lines[0].strip():
+            new_section.append("")
+        lines = new_section + lines
+        _write_notes(lines)
+        return
+
+    ticket_last = _find_ticket_in_section(
+        lines, content_start, content_end, ticket_id
+    )
+
+    if ticket_last is None:
+        insert_at = content_end + 1
+        new_block: list[str] = []
+        if content_end >= content_start:
+            new_block.append("")
+        new_block += [f"# {ticket_id}:", *entries]
+        lines[insert_at:insert_at] = new_block
     else:
-        body = desc
-    return f"- [{_now_hhmm()}] {body}"
+        # Newest first under the ticket header (same as previous single-line insert).
+        for offset, entry in enumerate(entries):
+            lines.insert(ticket_last + 1 + offset, entry)
+
+    _write_notes(lines)
 
 
 def add_note(ticket_id: str, description: str) -> None:
-    entry = _build_entry(description)
-    lines = _read_notes()
-
-    (open_sep, hdr_idx, hdr_close, content_start,
-     content_end, next_sep) = _find_today_section(lines)
-
-    if hdr_idx is None:
-        new_section: list[str] = [
-            _SEP,
-            _today_header(),
-            _SEP,
-            "",
-            f"# {ticket_id}:",
-            entry,
-            "",
-        ]
-        if lines and lines[0].strip():
-            new_section.append("")
-        lines = new_section + lines
-        _write_notes(lines)
-        return
-
-    ticket_last = _find_ticket_in_section(
-        lines, content_start, content_end, ticket_id
-    )
-
-    if ticket_last is None:
-        insert_at  = content_end + 1
-        new_block: list[str] = []
-        if content_end >= content_start:
-            new_block.append("")
-        new_block += [f"# {ticket_id}:", entry]
-        lines[insert_at:insert_at] = new_block
-    else:
-        lines.insert(ticket_last + 1, entry)
-
-    _write_notes(lines)
+    entries = _build_entries(description)
+    with _notes_io_lock:
+        _insert_entries_for_ticket(ticket_id, entries)
 
 
 def add_note_raw(ticket_id: str, raw_entry: str) -> None:
-    lines = _read_notes()
+    """Insert a pre-formatted bullet line (or multi-line block) as-is."""
+    raw = (raw_entry or "").rstrip("\n")
+    if not raw.strip():
+        raise RuntimeError("Empty raw note entry.")
+    # Normalize to bullet lines without inventing timestamps.
+    chunk = []
+    for line in raw.splitlines():
+        s = line.rstrip()
+        if not s.strip():
+            continue
+        if not s.lstrip().startswith("-"):
+            s = f"- {s.strip()}"
+        # Strip legacy HH:MM if somehow present in crafted raw entries.
+        s2 = s.lstrip()
+        if s2.startswith("- ["):
+            m = re.match(r"^- \[(\d{2}:\d{2})\]\s+(.*)$", s2)
+            if m:
+                s = f"- {m.group(2)}"
+        chunk.append(s)
+    with _notes_io_lock:
+        _insert_entries_for_ticket(ticket_id, chunk)
 
-    (open_sep, hdr_idx, hdr_close, content_start,
-     content_end, next_sep) = _find_today_section(lines)
 
-    if hdr_idx is None:
-        new_section: list[str] = [
-            _SEP,
-            _today_header(),
-            _SEP,
-            "",
-            f"# {ticket_id}:",
-            raw_entry,
-            "",
-        ]
-        if lines and lines[0].strip():
-            new_section.append("")
-        lines = new_section + lines
-        _write_notes(lines)
-        return
+# ---------------------------------------------------------------------------
+# Notes: Add — multi-line description scratch + commit
+# ---------------------------------------------------------------------------
 
-    ticket_last = _find_ticket_in_section(
-        lines, content_start, content_end, ticket_id
+_ADD_DESC_HEADER = (
+    "# Notes: Add description — one bullet per line\n"
+    "# Save / commit: Cmd+Enter (Mac) or Ctrl+Enter, or Command Palette:\n"
+    "#   Notes: Commit Description\n"
+    "# Cancel: close this tab without committing\n"
+    "# Magic single-line tags: DONE | REVIEW | EVAL | CREATED\n"
+    "#\n"
+)
+
+
+def _open_add_description_scratch(window: sublime.Window, ticket_id: str) -> None:
+    view = window.new_file()
+    view.set_name(f"Notes: Add — {ticket_id}")
+    view.set_scratch(True)
+    view.settings().set("stnotes_add_description", True)
+    view.settings().set("stnotes_add_ticket_id", ticket_id)
+    view.settings().set("stnotes_view_name", f"Notes: Add — {ticket_id}")
+    view.run_command("notes_insert_text", {"text": _ADD_DESC_HEADER})
+    # Place caret after the instruction header
+    end = view.size()
+    view.sel().clear()
+    view.sel().add(sublime.Region(end))
+    view.show(end)
+    _assign_stnotes_syntax(view)
+    sublime.status_message(
+        f"Notes: type description for {ticket_id}, then Cmd/Ctrl+Enter to commit"
     )
 
-    if ticket_last is None:
-        insert_at  = content_end + 1
-        new_block: list[str] = []
-        if content_end >= content_start:
-            new_block.append("")
-        new_block += [f"# {ticket_id}:", raw_entry]
-        lines[insert_at:insert_at] = new_block
-    else:
-        lines.insert(ticket_last + 1, raw_entry)
 
-    _write_notes(lines)
+def _extract_description_from_add_view(view: sublime.View) -> str:
+    text = view.substr(sublime.Region(0, view.size()))
+    return "\n".join(
+        line for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+
+
+def _finish_add_description(
+    window: sublime.Window,
+    ticket_id: str,
+    raw: str,
+) -> None:
+    desc = (raw or "").strip()
+    if not desc:
+        sublime.status_message(
+            "Notes: description cannot be empty — entry skipped."
+        )
+        return
+
+    try:
+        add_note(ticket_id, desc)
+        n = len(_normalize_note_lines(desc))
+        sublime.status_message(
+            f"Notes: [{ticket_id}] added {n} line(s)."
+        )
+    except RuntimeError as exc:
+        sublime.error_message(f"Notes - could not write entry:\n\n{exc}")
+        return
+    except Exception as exc:
+        log.exception("Unexpected error in add_note")
+        sublime.error_message(
+            f"Notes - unexpected error:\n\n{type(exc).__name__}: {exc}"
+        )
+        return
+
+    if ticket_id in (_TODO_ID, _OPS_ID) or not (
+        _youtrack_token() and _youtrack_base()
+    ):
+        return
+
+    # Magic YouTrack transitions only for a single-line DONE/REVIEW.
+    lines = _normalize_note_lines(desc)
+    desc_upper = lines[0].upper() if len(lines) == 1 else ""
+
+    def _maybe_post_comment() -> None:
+        if _post_comments_enabled():
+            comment_text = "\n".join(lines)
+            sublime.set_timeout_async(
+                lambda: _post_yt_comment_async(ticket_id, comment_text), 0
+            )
+
+    if desc_upper in ("DONE", "REVIEW"):
+        action = "Done" if desc_upper == "DONE" else "In Review"
+        items = [
+            [f"Set YouTrack {ticket_id} → {action}", "Confirm state change"],
+            ["Skip YouTrack state change", "Keep local note only"],
+        ]
+
+        def on_pick(index: int) -> None:
+            if index == 0:
+                if desc_upper == "DONE":
+                    sublime.set_timeout_async(
+                        lambda: _set_youtrack_done(ticket_id), 0
+                    )
+                else:
+                    sublime.set_timeout_async(
+                        lambda: _set_youtrack_in_review(ticket_id), 0
+                    )
+            _maybe_post_comment()
+
+        window.show_quick_panel(items, on_pick)
+    else:
+        _maybe_post_comment()
+
+
+def _post_yt_comment_async(ticket_id: str, text: str) -> None:
+    ok = _yt_add_comment(ticket_id, text)
+    if ok:
+        sublime.set_timeout(
+            lambda: sublime.status_message(
+                f"Notes: comment posted to {ticket_id}"
+            ),
+            0,
+        )
+    else:
+        sublime.set_timeout(
+            lambda: sublime.status_message(
+                f"Notes: WARNING - could not post comment to {ticket_id}"
+            ),
+            0,
+        )
+
+
+class NotesCommitDescriptionCommand(sublime_plugin.WindowCommand):
+    """Commit multi-line description from the Add scratch buffer."""
+
+    def is_enabled(self) -> bool:
+        view = self.window.active_view()
+        return bool(view and view.settings().get("stnotes_add_description"))
+
+    def run(self) -> None:
+        view = self.window.active_view()
+        if not view or not view.settings().get("stnotes_add_description"):
+            sublime.status_message(
+                "Notes: open Notes: Add description buffer first"
+            )
+            return
+        ticket_id = view.settings().get("stnotes_add_ticket_id") or ""
+        if not ticket_id:
+            sublime.error_message("Notes: missing ticket id on description buffer")
+            return
+        desc = _extract_description_from_add_view(view)
+        # Close scratch before write so user returns to previous view
+        view.set_scratch(True)
+        self.window.focus_view(view)
+        self.window.run_command("close")
+        _finish_add_description(self.window, ticket_id, desc)
 
 
 # ---------------------------------------------------------------------------
@@ -2403,7 +2689,7 @@ class NotesAddCommand(sublime_plugin.WindowCommand):
             ok_children = [cid for _, cid, _ in child_results if not cid.startswith("FAILED:")]
             if ok_children:
                 child_refs  = ", ".join(f"#{cid}" for cid in ok_children)
-                stage_entry = f"- [{_now_hhmm()}] [CREATED] for each stage: {child_refs}"
+                stage_entry = f"- [CREATED] for each stage: {child_refs}"
                 try:
                     add_note_raw(_parent_id_snap, stage_entry)
                 except Exception as exc:
@@ -2557,89 +2843,18 @@ class NotesAddCommand(sublime_plugin.WindowCommand):
         self._prompt_description()
 
     # ------------------------------------------------------------------
-    # Description + write
+    # Description + write (multi-line via scratch buffer)
     # ------------------------------------------------------------------
 
     def _prompt_description(self) -> None:
-        self.window.show_input_panel(
-            f"Description for {self._ticket_id}:",
-            "",
-            self._on_description,
-            None,
-            self._on_cancel,
-        )
+        _open_add_description_scratch(self.window, self._ticket_id)
+        # Command instance can finish; commit command owns the rest.
+        self._active = False
 
     def _on_description(self, raw: str) -> None:
+        """Legacy single-line path (kept for any callers)."""
         self._active = False
-        desc = raw.strip()
-        if not desc:
-            sublime.status_message(
-                "Notes: description cannot be empty - entry skipped."
-            )
-            return
-
-        try:
-            add_note(self._ticket_id, desc)
-            sublime.status_message(f"Notes: [{self._ticket_id}] entry added.")
-        except RuntimeError as exc:
-            sublime.error_message(f"Notes - could not write entry:\n\n{exc}")
-            return
-        except Exception as exc:
-            log.exception("Unexpected error in add_note")
-            sublime.error_message(
-                f"Notes - unexpected error:\n\n{type(exc).__name__}: {exc}"
-            )
-            return
-
-        tid = self._ticket_id
-
-        if tid not in (_TODO_ID, _OPS_ID) and _youtrack_token() and _youtrack_base():
-            desc_upper = desc.upper()
-
-            def _maybe_post_comment():
-                if _post_comments_enabled():
-                    comment_text = desc
-                    sublime.set_timeout_async(
-                        lambda: self._post_comment(tid, comment_text), 0
-                    )
-
-            if desc_upper in ("DONE", "REVIEW"):
-                action = "Done" if desc_upper == "DONE" else "In Review"
-                items = [
-                    [f"Set YouTrack {tid} → {action}", "Confirm state change"],
-                    ["Skip YouTrack state change", "Keep local note only"],
-                ]
-
-                def on_pick(index: int):
-                    if index == 0:
-                        if desc_upper == "DONE":
-                            sublime.set_timeout_async(
-                                lambda: _set_youtrack_done(tid), 0
-                            )
-                        else:
-                            sublime.set_timeout_async(
-                                lambda: _set_youtrack_in_review(tid), 0
-                            )
-                    _maybe_post_comment()
-
-                self.window.show_quick_panel(items, on_pick)
-            else:
-                _maybe_post_comment()
-
-    def _post_comment(self, ticket_id: str, text: str) -> None:
-        ok = _yt_add_comment(ticket_id, text)
-        if ok:
-            sublime.set_timeout(
-                lambda: sublime.status_message(
-                    f"Notes: comment posted to {ticket_id}"
-                ), 0,
-            )
-        else:
-            sublime.set_timeout(
-                lambda: sublime.status_message(
-                    f"Notes: WARNING - could not post comment to {ticket_id}"
-                ), 0,
-            )
+        _finish_add_description(self.window, self._ticket_id, raw)
 
     def _on_cancel(self) -> None:
         self._active = False
@@ -3504,7 +3719,7 @@ class NotesCreateIssueCommand(sublime_plugin.WindowCommand):
 
             if ok_children:
                 child_refs  = ", ".join(f"#{cid}" for cid in ok_children)
-                stage_entry = f"- [{_now_hhmm()}] [CREATED] for each stage: {child_refs}"
+                stage_entry = f"- [CREATED] for each stage: {child_refs}"
                 try:
                     add_note_raw(_parent_id_snap, stage_entry)
                 except Exception as exc:
@@ -3582,29 +3797,25 @@ class NotesSettingsCommand(sublime_plugin.WindowCommand):
                 "default": (
                     "// ST4Notes Settings\n"
                     "// -----------------\n"
-                    "// notes_file      : path to the local notes file (~ and ${home} ok via expanduser)\n"
-                    "// youtrack_base   : base URL for ticket links (https:// required, trailing slash required)\n"
-                    "// youtrack_token  : permanent API token (KEEP IN User settings only — never commit)\n"
-                    "//   Generate at: YouTrack -> Profile -> Authentication -> New token\n"
-                    "//   Required permissions: Read Issue, Create Issue, Update Issue, Create Comment\n"
-                    "// default_project : pre-filled shortName for issue creation and import\n"
-                    "//                   also used for TODO YT open issues list\n"
-                    "// issue_stages    : stage names used when 'Create stage sub-tasks? y'\n"
-                    "//                   Leave [] to be prompted at creation time.\n"
-                    '//                   Example: ["Design", "Dev", "QA", "Deploy"]\n'
-                    "// post_comments   : true/false — whether to post a YouTrack comment\n"
-                    "//                   each time you add a note via 'Notes - Add'\n"
-                    "//                   When false, notes are written locally only.\n"
-                    "//                   Re-enabling does NOT backfill skipped comments.\n"
-                    "// api_timeout_sec : seconds before a YouTrack API call times out (default 10)\n"
-                    "// api_max_retries : transient-error retries (429/502/503) before giving up (default 2)\n"
+                    "// notes_file      : path to the local notes file\n"
+                    "// youtrack_base   : https YouTrack issue base URL\n"
+                    "// youtrack_token  : permanent token (User settings only)\n"
+                    "// gitlab_base     : https GitLab root (MR hover)\n"
+                    "// gitlab_token    : PAT read_api (User settings only)\n"
+                    "// default_project / issue_stages / post_comments\n"
+                    "// note_max_lines / note_max_line_len : multi-line Add limits\n"
+                    "// api_timeout_sec / api_max_retries\n"
                     "{\n"
                     '    "notes_file":       "~/Documents/ST4Notes",\n'
                     '    "youtrack_base":    "https://youtrack.example.com/issue/",\n'
                     '    "youtrack_token":   "",\n'
+                    '    "gitlab_base":      "https://gitlab.example.com/",\n'
+                    '    "gitlab_token":     "",\n'
                     '    "default_project":  "",\n'
                     '    "issue_stages":     [],\n'
                     '    "post_comments":    false,\n'
+                    '    "note_max_lines":   50,\n'
+                    '    "note_max_line_len": 500,\n'
                     '    "api_timeout_sec":  10,\n'
                     '    "api_max_retries":  2\n'
                     "}\n"
@@ -3621,6 +3832,313 @@ _ISSUE_ID_RE = re.compile(
     r"^[A-Z][A-Z0-9_]{0,30}-\d+$",
     re.IGNORECASE,
 )
+
+
+# ---------------------------------------------------------------------------
+# GitLab MR hover helpers
+# ---------------------------------------------------------------------------
+
+_GITLAB_MR_URL_RE = re.compile(
+    r"^https://([^/]+)/(.+)/-/merge_requests/(\d+)(?:[/?#]|$)",
+    re.IGNORECASE,
+)
+
+
+def _parse_gitlab_mr_url(url: str) -> tuple[str, str, str] | None:
+    """
+    Return (host, project_path, mr_iid) for a GitLab MR URL, or None.
+    project_path is URL-decoded path without leading slash
+    (e.g. group/subgroup/project).
+    """
+    m = _GITLAB_MR_URL_RE.match(url.strip())
+    if not m:
+        return None
+    host = m.group(1).lower()
+    project_path = m.group(2).strip("/")
+    iid = m.group(3)
+    if not project_path or not iid:
+        return None
+    return host, project_path, iid
+
+
+def _gitlab_request(path: str, params: str = "") -> dict | list | None:
+    api_root = _gitlab_api_root()
+    token = _gitlab_token()
+    if not api_root or not token:
+        return None
+
+    base_err = _validate_gitlab_base(_gitlab_base())
+    if base_err:
+        log.error("GitLab base URL rejected: %s", base_err)
+        return None
+
+    url = f"{api_root}{path}"
+    if params:
+        url += ("&" if "?" in url else "?") + params
+
+    timeout = _api_timeout()
+    retries = _api_max_retries()
+    ctx = _ssl_context()
+
+    for attempt in range(retries + 1):
+        _api_rate_wait()
+        req = Request(
+            url,
+            method="GET",
+            headers={
+                "PRIVATE-TOKEN": token,
+                "Accept": "application/json",
+                "Cache-Control": "no-cache",
+            },
+        )
+        try:
+            with _yt_urlopen(req, timeout=timeout, ctx=ctx) as resp:
+                raw = resp.read(_API_MAX_RESPONSE_BYTES_LIST).decode("utf-8")
+                return json.loads(raw) if raw.strip() else {}
+        except HTTPError as exc:
+            if exc.code == 404:
+                return _NOT_FOUND
+            if exc.code in (429, 502, 503) and attempt < retries:
+                time.sleep(1 + attempt)
+                continue
+            log.warning("GitLab API HTTP %s for GET %s", exc.code, path)
+            return None
+        except Exception as exc:
+            if attempt < retries:
+                time.sleep(1 + attempt)
+                continue
+            log.warning("GitLab API error GET %s: %s", path, exc)
+            return None
+    return None
+
+
+def _pipeline_color(status: str) -> str:
+    s = (status or "").lower()
+    if s in ("success", "passed"):
+        return "#98c379"
+    if s in ("failed", "canceled", "cancelled"):
+        return "#e06c75"
+    if s in ("running", "pending", "created", "waiting_for_resource", "preparing"):
+        return "#e5c07b"
+    if s in ("skipped", "manual"):
+        return "#5c6370"
+    return "#abb2bf"
+
+
+def _mr_state_color(state: str) -> str:
+    s = (state or "").lower()
+    if s == "merged":
+        return "#c678dd"
+    if s == "opened" or s == "open":
+        return "#98c379"
+    if s == "closed":
+        return "#e06c75"
+    return "#abb2bf"
+
+
+def _fetch_gitlab_mr_info(project_path: str, iid: str) -> dict | None:
+    proj = quote(project_path, safe="")
+    mr = _gitlab_request(
+        f"/projects/{proj}/merge_requests/{iid}",
+        params=(
+            "include_diverged_commits_count=false"
+            "&include_rebase_in_progress=false"
+        ),
+    )
+    if mr is _NOT_FOUND:
+        return {"__not_found__": True}
+    if not isinstance(mr, dict) or not mr:
+        return None
+
+    state = str(mr.get("state") or "")
+    title = str(mr.get("title") or "")
+    draft = bool(mr.get("draft") or mr.get("work_in_progress"))
+
+    pipe = mr.get("head_pipeline") or {}
+    if not isinstance(pipe, dict):
+        pipe = {}
+    pipe_status = str(pipe.get("status") or "")
+    pipe_web = str(pipe.get("web_url") or "")
+
+    # Detailed merge / approval status when present
+    detailed = str(
+        mr.get("detailed_merge_status")
+        or mr.get("merge_status")
+        or ""
+    )
+
+    changes = _gitlab_request(
+        f"/projects/{proj}/merge_requests/{iid}/changes",
+        params="access_raw_diffs=false",
+    )
+    # Each entry: {label, path} — path is used for GitLab diffs deep-link / local open
+    files: list[dict] = []
+    if isinstance(changes, dict):
+        ch_list = changes.get("changes") or []
+        if isinstance(ch_list, list):
+            for ch in ch_list[:40]:
+                if not isinstance(ch, dict):
+                    continue
+                new_p = str(ch.get("new_path") or ch.get("old_path") or "")
+                old_p = str(ch.get("old_path") or "")
+                # Prefer new_path for anchor hash (matches GitLab UI for non-deleted)
+                link_path = new_p or old_p
+                if ch.get("new_file"):
+                    label = f"+ {new_p}"
+                elif ch.get("deleted_file"):
+                    link_path = old_p or new_p
+                    label = f"- {link_path}"
+                elif ch.get("renamed_file") and old_p and new_p and old_p != new_p:
+                    label = f"~ {old_p} → {new_p}"
+                    link_path = new_p
+                else:
+                    label = f"  {new_p}"
+                if link_path:
+                    files.append({"label": label, "path": link_path})
+            total = len(ch_list)
+            if total > len(files):
+                files.append(
+                    {
+                        "label": f"… +{total - len(files)} more",
+                        "path": "",
+                    }
+                )
+
+    return {
+        "title": title,
+        "state": state,
+        "draft": draft,
+        "detailed_merge_status": detailed,
+        "pipeline_status": pipe_status,
+        "pipeline_url": pipe_web,
+        "files": files,
+        "author": ((mr.get("author") or {}) if isinstance(mr.get("author"), dict) else {}).get("username", ""),
+        "source_branch": str(mr.get("source_branch") or ""),
+        "target_branch": str(mr.get("target_branch") or ""),
+    }
+
+
+def _build_mr_hover_html(url: str, info: dict | None, not_found: bool = False) -> str:
+    link_html = (
+        f"<a href='open:{_h(url)}' "
+        f"style='color:#56b6c2;text-decoration:underline'>{_h(url)}</a>"
+    )
+    sep = "<div style='margin:6px 0;border-top:1px solid #3e4451'></div>"
+
+    if not_found:
+        body = (
+            "<span style='color:#e06c75'>MR not found</span> "
+            "<span style='color:#5c6370'>(404)</span>"
+        )
+        return (
+            "<body id='stnotes-hover' "
+            "style='margin:8px 12px;font-family:monospace;font-size:0.9em'>"
+            + link_html + sep + body + "</body>"
+        )
+
+    if info is None:
+        hint = ""
+        if not _gitlab_token() or not _gitlab_base():
+            hint = (
+                "<div style='color:#5c6370;margin-top:6px'>"
+                "Set gitlab_base + gitlab_token in ST4Notes settings for MR details."
+                "</div>"
+            )
+        return (
+            "<body id='stnotes-hover' "
+            "style='margin:8px 12px;font-family:monospace;font-size:0.9em'>"
+            + link_html + hint + "</body>"
+        )
+
+    state = info.get("state", "")
+    state_label = state
+    if info.get("draft"):
+        state_label = f"{state} (draft)" if state else "draft"
+
+    pipe = info.get("pipeline_status", "") or "(none)"
+    rows: list[tuple[str, str, str]] = [
+        ("title", info.get("title", ""), "#cdd9e5"),
+        ("status", state_label, _mr_state_color(state)),
+        ("pipeline", pipe, _pipeline_color(info.get("pipeline_status", ""))),
+    ]
+    if info.get("detailed_merge_status"):
+        rows.append(
+            ("merge", str(info.get("detailed_merge_status")), "#abb2bf")
+        )
+    if info.get("source_branch") and info.get("target_branch"):
+        rows.append(
+            (
+                "branch",
+                f"{info['source_branch']} → {info['target_branch']}",
+                "#5c6370",
+            )
+        )
+    if info.get("author"):
+        rows.append(("author", str(info.get("author")), "#6699cc"))
+
+    col_w = max(len(lbl) for lbl, _, _ in rows) + 2
+    rows_html = "\n".join(
+        f"<span style='color:#5c6370'>{_h((lbl + ':').ljust(col_w))}</span>"
+        f"<span style='color:{col}'>{_h(val)}</span>"
+        for lbl, val, col in rows
+        if val
+    )
+
+    files = info.get("files") or []
+    files_html = ""
+    if files:
+        # Count only real file entries (exclude the “… +N more” placeholder)
+        real_count = sum(
+            1
+            for f in files
+            if (isinstance(f, dict) and f.get("path"))
+            or (isinstance(f, str) and not str(f).startswith("…"))
+        )
+        shown = files[:25]
+        flines_parts: list[str] = []
+        for f in shown:
+            if isinstance(f, dict):
+                label = str(f.get("label") or f.get("path") or "")
+                path = str(f.get("path") or "")
+            else:
+                label = str(f)
+                path = ""
+            if not path:
+                flines_parts.append(
+                    f"<div style='color:#5c6370'>{_h(label)}</div>"
+                )
+                continue
+            diffs_url = _mr_file_diffs_url(url, path)
+            flines_parts.append(
+                f"<div><a href='open:{_h(diffs_url)}' "
+                f"style='color:#abb2bf;text-decoration:none'>"
+                f"{_h(label)}</a></div>"
+            )
+        flines = "\n".join(flines_parts)
+        more = ""
+        if len(files) > 25:
+            more = (
+                f"<div style='color:#5c6370'>"
+                f"… {len(files) - 25} more</div>"
+            )
+        files_html = (
+            sep
+            + f"<div style='color:#5c6370;margin-bottom:4px'>"
+            f"changed files ({real_count or len(files)}) "
+            f"<span style='color:#3e4451'>click → GitLab diffs</span></div>"
+            + f"<div style='white-space:pre;line-height:1.4;max-height:280px;"
+            f"overflow:hidden'>{flines}{more}</div>"
+        )
+
+    return (
+        "<body id='stnotes-hover' "
+        "style='margin:8px 12px;font-family:monospace;font-size:0.9em'>"
+        + link_html
+        + sep
+        + f"<div style='white-space:pre;line-height:1.7'>{rows_html}</div>"
+        + files_html
+        + "</body>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3660,6 +4178,17 @@ class NotesUrlHoverListener(sublime_plugin.EventListener):
                     self._show_issue_popup(view, point, url, ticket_id)
                 else:
                     self._show_plain_popup(view, point, url)
+            elif _parse_gitlab_mr_url(url):
+                if _gitlab_token() and _gitlab_base() and _is_gitlab_host(url):
+                    self._show_mr_popup(view, point, url)
+                else:
+                    view.show_popup(
+                        _build_mr_hover_html(url, None),
+                        flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+                        location=point,
+                        max_width=740,
+                        on_navigate=self._on_navigate,
+                    )
             else:
                 self._show_plain_popup(view, point, url)
             return
@@ -3737,6 +4266,37 @@ class NotesUrlHoverListener(sublime_plugin.EventListener):
             max_width=520,
             on_navigate=self._on_navigate,
         )
+
+    def _show_mr_popup(self, view, point, url):
+        view.show_popup(
+            (
+                "<body id='stnotes-hover' style='margin:8px 12px;font-family:monospace'>"
+                f"<a href='open:{_h(url)}' style='color:#56b6c2'>{_h(url)}</a>"
+                "<div style='color:#5c6370;margin-top:6px'>Loading MR…</div>"
+                "</body>"
+            ),
+            flags=sublime.HIDE_ON_MOUSE_MOVE_AWAY,
+            location=point,
+            max_width=780,
+            on_navigate=self._on_navigate,
+        )
+        sublime.set_timeout_async(
+            lambda: self._fetch_mr_and_update(view, point, url), 0
+        )
+
+    def _fetch_mr_and_update(self, view, point, url):
+        parsed = _parse_gitlab_mr_url(url)
+        if not parsed:
+            html = _build_mr_hover_html(url, None)
+            sublime.set_timeout(lambda: view.update_popup(html), 0)
+            return
+        _host, project_path, iid = parsed
+        info = _fetch_gitlab_mr_info(project_path, iid)
+        if info and info.get("__not_found__"):
+            html = _build_mr_hover_html(url, None, not_found=True)
+        else:
+            html = _build_mr_hover_html(url, info)
+        sublime.set_timeout(lambda: view.update_popup(html), 0)
 
     def _fetch_and_update(self, view, point, ticket_id, url):
         raw = _fetch_youtrack_issue(ticket_id)
@@ -3816,7 +4376,15 @@ class NotesUrlHoverListener(sublime_plugin.EventListener):
 
     def _on_navigate(self, href):
         if href.startswith("open:"):
-            _open_in_browser(href[len("open:"):])
+            target = href[len("open:"):]
+            # Decode HTML entities that _h() may have introduced in hrefs
+            target = (
+                target.replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", '"')
+            )
+            _open_in_browser(target)
 
 
 # ---------------------------------------------------------------------------
